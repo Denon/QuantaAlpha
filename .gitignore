@@ -127,3 +127,6 @@ release-notes.md
 
 # ---- Sphinx documentation ----
 docs/_build/
+
+package-lock.json
+.claude/
