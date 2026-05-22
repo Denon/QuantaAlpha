@@ -14,6 +14,8 @@ from quantaalpha.core.exception import CodeFormatError, CustomRuntimeError, NoOu
 from quantaalpha.core.experiment import Experiment, FBWorkspace
 from quantaalpha.core.utils import cache_with_pickle
 from quantaalpha.llm.client import md5_hash
+from quantaalpha.factors.coder.data_files import link_factor_data_files
+from quantaalpha.factors.coder.execution_cache import factor_runtime_fingerprint
 
 
 class FactorTask(CoSTEERTask):
@@ -95,7 +97,7 @@ class FactorFBWorkspace(FBWorkspace):
 
     def hash_func(self, data_type: str = "Debug") -> str:
         return (
-            md5_hash(data_type + self.code_dict["factor.py"])
+            md5_hash(data_type + factor_runtime_fingerprint() + self.code_dict["factor.py"])
             if ("factor.py" in self.code_dict and not self.raise_exception)
             else None
         )
@@ -149,7 +151,7 @@ class FactorFBWorkspace(FBWorkspace):
 
             # Ensure data path exists and has files
             if source_data_path.exists() and any(source_data_path.iterdir()):
-                self.link_all_files_in_folder_to_workspace(source_data_path, self.workspace_path)
+                link_factor_data_files(source_data_path, self.workspace_path)
             else:
                 from quantaalpha.log import logger
                 logger.warning(f"Data folder {source_data_path} does not exist or is empty. Skipping linking.")
