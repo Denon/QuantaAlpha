@@ -891,7 +891,6 @@ async def _run_backtest(task_id: str, req: BacktestStartRequest, config_path: st
             "-c", config_path,
             "--factor-source", req.factorSource,
             "--factor-json", factor_json_str,
-            "--skip-uncached",
             "-v",
         ]
 

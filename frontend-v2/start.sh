@@ -21,7 +21,7 @@ echo "✅ Node.js: $(node --version)"
 # 激活 conda 环境（使用与主实验相同的 quantaalpha 环境）
 # =============================================================================
 eval "$(conda shell.bash hook)" 2>/dev/null
-CONDA_ENV="${CONDA_ENV_NAME:-quantaalpha}"
+CONDA_ENV="${CONDA_ENV_NAME:-rdagent}"
 conda activate "${CONDA_ENV}" 2>/dev/null
 
 if [ $? -ne 0 ]; then

@@ -3,19 +3,20 @@ import pandas as pd
 import numpy as np
 import os
 from quantaalpha.factors.coder.expr_parser import parse_expression, parse_symbol
+from quantaalpha.factors.coder.execution_utils import ensure_return_column, replace_dataframe_symbols
 from quantaalpha.factors.coder.function_lib import *
 
 
 def calculate_factor(expr: str, name: str):
     # stock dataframe
     df = pd.read_hdf('./daily_pv.h5', key='data')
+    df = ensure_return_column(df)
     
     expr = parse_symbol(expr, df.columns)
     expr = parse_expression(expr)
 
     # replace '$var' by 'df['var'] to extract var's actual values
-    for col in df.columns:
-        expr = expr.replace(col[1:], f"df[\'{col}\']")
+    expr = replace_dataframe_symbols(expr, df.columns)
 
     df[name] = eval(expr)
     result = df[name].astype(np.float64)
@@ -29,3 +30,4 @@ if __name__ == '__main__':
     expr = "{{ expression }}" # Your output factor expression will be filled in here
     name = "{{ factor_name }}" # Your output factor name will be filled in here
     calculate_factor(expr, name)
+

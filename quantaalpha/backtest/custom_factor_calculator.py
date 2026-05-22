@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
+from quantaalpha.backtest.cache_validation import should_reject_cached_factor
 
 # Add project root (from quantaalpha/backtest/ up two levels)
 project_root = Path(__file__).resolve().parents[2]
@@ -57,6 +58,7 @@ class CustomFactorCalculator:
         self._config = config
         self.cache_dir = cache_dir or DEFAULT_CACHE_DIR
         self.auto_extract_cache = auto_extract_cache
+        self._target_instruments: Optional[set[str]] = None
         self._cache_extracted = False
         
         if data_df is not None and len(data_df) > 0:
@@ -113,6 +115,78 @@ class CustomFactorCalculator:
                 logger.debug(f"Cache load failed [{cache_key}]: {e}")
                 return None
         return None
+
+    def _get_target_instruments(self) -> set[str]:
+        if self._target_instruments is not None:
+            return self._target_instruments
+
+        self._target_instruments = set()
+        if not self._config:
+            return self._target_instruments
+
+        data_config = self._config.get("data", {})
+        market = data_config.get("market", "csi300")
+        start_time = data_config.get("start_time", "2016-01-01")
+        end_time = data_config.get("end_time", "2025-12-31")
+
+        try:
+            from qlib.data import D
+
+            instruments = D.instruments(market)
+            stock_list = D.list_instruments(
+                instruments,
+                start_time=start_time,
+                end_time=end_time,
+                as_list=True,
+            )
+            self._target_instruments = {str(instrument) for instrument in stock_list}
+        except Exception as e:
+            logger.debug(f"Could not resolve target instruments for market {market}: {e}")
+
+        return self._target_instruments
+
+    def _filter_cached_result_to_config(self, result: pd.Series, source: str) -> Optional[pd.Series]:
+        """Keep cached factor data only when it overlaps the configured backtest universe."""
+        if not isinstance(result.index, pd.MultiIndex):
+            return result
+
+        if "instrument" not in result.index.names:
+            return result
+
+        target_instruments = self._get_target_instruments()
+        cached_instruments = result.index.get_level_values("instrument").unique()
+
+        if should_reject_cached_factor(cached_instruments, target_instruments):
+            data_config = (self._config or {}).get("data", {})
+            market = data_config.get("market", "unknown")
+            logger.warning(
+                f"Reject cached factor [{source}]: no instrument overlap with market {market}. "
+                f"cache_sample={list(cached_instruments[:3])}, "
+                f"target_sample={list(sorted(target_instruments))[:3]}"
+            )
+            return None
+
+        if target_instruments:
+            inst_mask = result.index.get_level_values("instrument").isin(target_instruments)
+            result = result.loc[inst_mask]
+
+        if "datetime" in result.index.names and self._config:
+            data_config = self._config.get("data", {})
+            start_time = data_config.get("start_time")
+            end_time = data_config.get("end_time")
+            dt_values = pd.to_datetime(result.index.get_level_values("datetime"))
+            date_mask = pd.Series(True, index=result.index)
+            if start_time:
+                date_mask &= dt_values >= pd.Timestamp(start_time)
+            if end_time:
+                date_mask &= dt_values <= pd.Timestamp(end_time)
+            result = result.loc[date_mask.to_numpy()]
+
+        if result.empty:
+            logger.warning(f"Reject cached factor [{source}]: empty after market/date filtering")
+            return None
+
+        return result
     
     def _load_from_cache_location(self, cache_location: Dict) -> Optional[pd.Series]:
         """Load factor from path given in cache_location."""
@@ -154,7 +228,7 @@ class CustomFactorCalculator:
                     result = result.swaplevel()
                     result = result.sort_index()
             
-            return result
+            return self._filter_cached_result_to_config(result, source)
         except Exception as e:
             logger.debug(f"Process cached result failed [{source}]: {e}")
             return None

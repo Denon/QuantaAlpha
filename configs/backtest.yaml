@@ -140,7 +140,7 @@ llm:
   enabled: true
   timeout: 300
   max_retries: 3
-  cache_results: true
+  cache_results: false
   cache_dir: "data/results/factor_cache"
   # Auto-extract cache from main program logs; set false to avoid scanning many experiment dirs
   auto_extract_cache: false
