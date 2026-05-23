@@ -35,9 +35,9 @@ This change introduces true per-factor IC metrics computed cross-sectionally aga
 
 ### 3. Cache key scoping via tuple hash
 
-**Choice**: MD5 hash of `(expression, market, date_start, date_end, provider_uri)` instead of just expression.
+**Choice**: MD5 hash of `(expression, market, date_start, date_end, provider_uri, label_expr)` instead of just expression.
 
-**Why**: A factor computed for CSI 300 over 2020-2022 with provider A is not valid for CSI 500 over 2023-2024 with provider B. Alternative: cache per directory per market — rejected because it doesn't prevent date range mismatches.
+**Why**: A factor computed for CSI 300 over 2020-2022 with provider A and label "Ref(close, -5)/close - 1" is not valid for CSI 500 or a different label definition. Including label_expr catches label changes that would otherwise produce silently stale metrics.
 
 ### 4. Instrument validation on cache read
 
@@ -51,18 +51,22 @@ This change introduces true per-factor IC metrics computed cross-sectionally aga
 
 **Why**: Duplicate expressions waste computation and bias the model. Sorting by absolute Rank IC maximizes the expected signal in the capped set. Alternative: random sampling — rejected because it's non-deterministic.
 
-### 6. Legacy backward compatibility
+### 6. Metric context stored with factor_metrics
 
-**Choice**: Old library entries without `factor_metrics` load as `quality: unknown`. `backtest_results` remains readable but is never written by new code; new code writes `experiment_backtest_results`.
+**Choice**: Store `provider_uri`, `market`, `start_time`, `end_time`, and `label_expr` alongside IC metrics in each `factor_metrics` entry.
 
-**Why**: No need to force regeneration of old libraries. Users can re-run to populate `factor_metrics` and get quality labels.
+**Why**: Without the context that produced the metrics, stale detection is impossible. If the user changes the label from 5-day forward return to 1-day, the stored Rank IC of 0.05 is meaningless. The context enables the system to detect staleness and trigger recomputation. The FactorLibraryManager reads the label and universe from its mining/backtest configuration, resolves them through the Qlib provider, and passes them to the IC computation helper.
+
+### 7. Legacy backward compatibility
+
+**Choice**: Old library entries without `factor_metrics` load as `quality: unknown`. `backtest_results` remains readable but is never written by new code; new code writes `experiment_backtest_results`. Legacy unscoped cache files are ignored on read (not deleted, not overwritten); new scoped files are created alongside them.
 
 ## Risks / Trade-offs
 
 - **Existing factor cards change their displayed metrics**: Users who relied on experiment Sharpe being shown on factor cards will see IC-based metrics instead → Show experiment metrics in detail view only; document the change.
-- **Backtest recomputation on first run after deploy**: Scoped cache keys mean all cached results are stale on first run → Accept the one-time recomputation cost.
+- **Backtest recomputation on first run after deploy**: Scoped cache keys mean all cached results are stale on first run → Accept the one-time recomputation cost. Existing unscoped cache files remain on disk but are ignored.
 - **max_factors=50 may drop factors users care about**: The cap prioritizes by Rank IC, which aligns with quality but may exclude niche factors → Make it configurable so users can raise or remove it.
-- **IC computation depends on label alignment**: If the label definition changes, old `factor_metrics` are silently stale → Cache key scoping includes date range; regenerating the library for a new label is the expected workflow.
+- **IC computation depends on label alignment**: If the label definition changes, old `factor_metrics` are silently stale → Cache key scoping includes label_expr and date range; storing metric context with each entry enables stale detection; regenerating the library for a new label is the expected workflow.
 
 ## Migration Plan
 

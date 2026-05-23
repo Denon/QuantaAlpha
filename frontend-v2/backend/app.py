@@ -139,28 +139,19 @@ def _load_factor_library(path: str) -> Dict[str, Any]:
         return json.load(f)
 
 
-def _classify_quality(backtest_results: Dict[str, Any]) -> str:
-    """Classify factor quality based on backtest metrics."""
-    if not backtest_results:
-        return "low"
-    # Use information ratio or IC-related metrics
-    ic = None
-    for key in ["1day.excess_return_without_cost.information_ratio",
-                 "1day.excess_return_with_cost.information_ratio"]:
-        if key in backtest_results:
-            ic = backtest_results[key]
-            break
-    if ic is None:
-        # Try to find any IC-like metric
-        for key, val in backtest_results.items():
-            if "information_ratio" in key and isinstance(val, (int, float)):
-                ic = val
-                break
-    if ic is None:
-        return "medium"
-    if ic > 0.5:
+def _classify_quality(factor_info: Dict[str, Any]) -> str:
+    """Classify factor quality based on per-factor factor_metrics (Rank IC)."""
+    fm = factor_info.get("factor_metrics")
+    if not fm:
+        return "unknown"
+    rank_ic = fm.get("Rank_IC", 0.0)
+    n_days = fm.get("n_days", 0)
+    if n_days < 10:
+        return "unknown"
+    abs_rank_ic = abs(rank_ic)
+    if abs_rank_ic >= 0.03:
         return "high"
-    if ic > 0.1:
+    if abs_rank_ic >= 0.01:
         return "medium"
     return "low"
 
@@ -594,20 +585,34 @@ async def get_factors(
     factors_dict = raw.get("factors", {})
     metadata = raw.get("metadata", {})
 
-    # Convert dict to list with quality classification
+    # Convert dict to list with per-factor quality classification
     factors_list: List[Dict[str, Any]] = []
     for factor_id, factor_info in factors_dict.items():
         if not isinstance(factor_info, dict):
             continue
+
+        q = _classify_quality(factor_info)
+        fm = factor_info.get("factor_metrics", {})
         bt = factor_info.get("backtest_results", {})
-        q = _classify_quality(bt)
-        # Extract metrics with proper fallbacks
-        # Try specific keys first, then standard ones
-        ic = bt.get("IC", bt.get("1day.excess_return_without_cost.information_coefficient", 0))
-        icir = bt.get("ICIR", bt.get("1day.excess_return_without_cost.information_coefficient_ir", 0))
-        rank_ic = bt.get("Rank IC", bt.get("rank_ic", bt.get("1day.excess_return_without_cost.rank_ic", 0)))
-        rank_icir = bt.get("Rank ICIR", bt.get("rank_ic_ir", bt.get("1day.excess_return_without_cost.rank_ic_ir", 0)))
-        
+        exp_bt = factor_info.get("experiment_backtest_results", {})
+
+        # Use per-factor metrics when available, fall back to experiment metrics
+        ic = fm.get("IC", 0.0)
+        icir = fm.get("ICIR", 0.0)
+        rank_ic = fm.get("Rank_IC", 0.0)
+        rank_icir = fm.get("Rank_ICIR", 0.0)
+
+        # Experiment-level metrics (only from experiment_backtest_results or legacy backtest_results)
+        exp_annual_return = exp_bt.get("annualized_return",
+                            bt.get("1day.excess_return_with_cost.annualized_return",
+                            bt.get("1day.excess_return_without_cost.annualized_return", 0)))
+        exp_max_drawdown = exp_bt.get("max_drawdown",
+                            bt.get("1day.excess_return_with_cost.max_drawdown",
+                            bt.get("1day.excess_return_without_cost.max_drawdown", 0)))
+        exp_sharpe = exp_bt.get("information_ratio",
+                        bt.get("1day.excess_return_with_cost.information_ratio",
+                        bt.get("1day.excess_return_without_cost.information_ratio", 0)))
+
         factor_entry = {
             "factorId": factor_info.get("factor_id", factor_id),
             "factorName": factor_info.get("factor_name", "Unknown"),
@@ -615,18 +620,19 @@ async def get_factors(
             "factorDescription": factor_info.get("factor_description", ""),
             "factorFormulation": factor_info.get("factor_formulation", ""),
             "quality": q,
-            "backtestResults": bt,
-            # Extract key metrics
+            # Per-factor IC metrics (source of truth for quality)
+            "factorMetrics": fm,
             "ic": ic,
             "icir": icir,
             "rankIc": rank_ic,
             "rankIcir": rank_icir,
-            "annualReturn": bt.get("1day.excess_return_with_cost.annualized_return", 
-                                  bt.get("1day.excess_return_without_cost.annualized_return", 0)),
-            "maxDrawdown": bt.get("1day.excess_return_with_cost.max_drawdown", 
-                                 bt.get("1day.excess_return_without_cost.max_drawdown", 0)),
-            "sharpeRatio": bt.get("1day.excess_return_with_cost.information_ratio", 
-                                bt.get("1day.excess_return_without_cost.information_ratio", 0)),
+            # Experiment-level metrics (shown in detail view only as "experiment/model metrics")
+            "experimentBacktestResults": exp_bt,
+            "annualReturn": exp_annual_return,
+            "maxDrawdown": exp_max_drawdown,
+            "sharpeRatio": exp_sharpe,
+            # Legacy backtest_results (kept for backward compatibility)
+            "backtestResults": bt,
             "round": factor_info.get("evolution_metadata", {}).get("round", 0)
             if isinstance(factor_info.get("evolution_metadata"), dict) else 0,
             "direction": factor_info.get("evolution_metadata", {}).get("direction_index", "")
@@ -1248,8 +1254,7 @@ def _update_mining_metrics(task: Dict[str, Any]):
             except Exception:
                 pass # If date parsing fails, be permissive or conservative? Permissive for now.
 
-            bt = f_info.get("backtest_results", {})
-            q = _classify_quality(bt)
+            q = _classify_quality(f_info)
             if q == "high": high += 1
             elif q == "medium": medium += 1
             else: low += 1

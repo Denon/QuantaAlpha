@@ -47,27 +47,27 @@ export const FactorLibraryPage: React.FC = () => {
       });
       if (resp.success && resp.data) {
         const apiFactors: Factor[] = resp.data.factors.map((f: any) => {
-          const bt = f.backtestResults || {};
+          const fm = f.factorMetrics || {};
           return {
             factorId: f.factorId || '',
             factorName: f.factorName || 'Unknown',
             factorExpression: f.factorExpression || '',
             factorDescription: f.factorDescription || '',
-            quality: (f.quality || 'low') as FactorQuality,
-            // Prioritize specific metrics from backtest results to match detail view
-            ic: (typeof bt['IC'] === 'number' ? bt['IC'] : (f.ic || bt['1day.excess_return_without_cost.information_coefficient'] || 0)),
-            icir: (typeof bt['ICIR'] === 'number' ? bt['ICIR'] : (f.icir || bt['1day.excess_return_without_cost.information_coefficient_ir'] || 0)),
-            rankIc: (typeof bt['Rank IC'] === 'number' ? bt['Rank IC'] : (f.rankIc || bt['rank_ic'] || bt['1day.excess_return_without_cost.rank_ic'] || 0)),
-            rankIcir: (typeof bt['Rank ICIR'] === 'number' ? bt['Rank ICIR'] : (f.rankIcir || bt['rank_ic_ir'] || bt['1day.excess_return_without_cost.rank_ic_ir'] || 0)),
+            quality: (f.quality || 'unknown') as FactorQuality,
+            // Per-factor IC metrics (source of truth)
+            factorMetrics: fm,
+            ic: fm.IC ?? 0,
+            icir: fm.ICIR ?? 0,
+            rankIc: fm.Rank_IC ?? 0,
+            rankIcir: fm.Rank_ICIR ?? 0,
+            // Experiment-level metrics
+            experimentBacktestResults: f.experimentBacktestResults || {},
+            annualReturn: f.annualReturn || 0,
+            maxDrawdown: f.maxDrawdown || 0,
+            sharpeRatio: f.sharpeRatio || 0,
             round: f.round || 0,
             direction: String(f.direction ?? ''),
             createdAt: f.createdAt || new Date().toISOString(),
-            // Extra fields from API
-            backtestResults: f.backtestResults,
-            factorFormulation: f.factorFormulation,
-            annualReturn: f.annualReturn,
-            maxDrawdown: f.maxDrawdown,
-            sharpeRatio: f.sharpeRatio,
           };
         });
         setFactors(apiFactors);
@@ -146,6 +146,7 @@ export const FactorLibraryPage: React.FC = () => {
     high: factors.filter((f) => f.quality === 'high').length,
     medium: factors.filter((f) => f.quality === 'medium').length,
     low: factors.filter((f) => f.quality === 'low').length,
+    unknown: factors.filter((f) => f.quality === 'unknown').length,
   };
 
   return (
@@ -255,6 +256,20 @@ export const FactorLibraryPage: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        <Card className="glass card-hover">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm text-muted-foreground">未知质量</div>
+                <div className="text-2xl font-bold mt-1 text-muted-foreground">{stats.unknown}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-muted/30">
+                <AlertCircle className="h-6 w-6 text-muted-foreground" />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Filters */}
@@ -302,6 +317,13 @@ export const FactorLibraryPage: React.FC = () => {
               >
                 低质量 ({stats.low})
               </Button>
+              <Button
+                variant={qualityFilter === 'unknown' ? 'primary' : 'outline'}
+                size="sm"
+                onClick={() => setQualityFilter('unknown')}
+              >
+                未知 ({stats.unknown})
+              </Button>
             </div>
           </div>
         </CardContent>
@@ -321,7 +343,7 @@ export const FactorLibraryPage: React.FC = () => {
                   <CardTitle className="text-base">{factor.factorName}</CardTitle>
                   <div className="flex items-center gap-2 mt-2">
                     <Badge className={getQualityBadgeClass(factor.quality)}>
-                      {factor.quality === 'high' ? '高' : factor.quality === 'medium' ? '中' : '低'}
+                      {factor.quality === 'high' ? '高' : factor.quality === 'medium' ? '中' : factor.quality === 'low' ? '低' : '未知'}
                     </Badge>
                     {factor.round > 0 && (
                       <span className="text-xs text-muted-foreground">
@@ -411,12 +433,11 @@ export const FactorLibraryPage: React.FC = () => {
                     {selectedFactor.factorName || selectedFactor.factor_name}
                   </CardTitle>
                   <div className="flex items-center gap-2 mt-2">
-                    <Badge className={getQualityBadgeClass(selectedFactor.quality || 'medium')}>
-                      {selectedFactor.quality === 'high'
-                        ? '高质量'
-                        : selectedFactor.quality === 'medium'
-                        ? '中等质量'
-                        : '低质量'}
+                    <Badge className={getQualityBadgeClass(selectedFactor.quality || 'unknown')}>
+                      {selectedFactor.quality === 'high' ? '高质量'
+                       : selectedFactor.quality === 'medium' ? '中等质量'
+                       : selectedFactor.quality === 'low' ? '低质量'
+                       : '未知质量'}
                     </Badge>
                   </div>
                 </div>
@@ -456,14 +477,39 @@ export const FactorLibraryPage: React.FC = () => {
                 </div>
               )}
 
-              {/* Backtest Results */}
-              {(selectedFactor.backtestResults || selectedFactor.backtest_results) && (
+              {/* Per-factor IC Metrics */}
+              {selectedFactor.factorMetrics && (
                 <div>
-                  <h4 className="text-sm font-medium mb-2">回测指标</h4>
+                  <h4 className="text-sm font-medium mb-1 flex items-center gap-2">
+                    <TrendingUp className="h-3.5 w-3.5 text-primary" />
+                    单因子 IC 指标
+                    <span className="text-xs text-muted-foreground font-normal">(per-factor IC)</span>
+                  </h4>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    {Object.entries(selectedFactor.factorMetrics).map(([key, val]) => (
+                      <div key={key} className="rounded-lg bg-primary/5 p-3 border border-primary/10">
+                        <div className="text-xs text-muted-foreground truncate" title={key}>
+                          {key}
+                        </div>
+                        <div className="text-sm font-bold font-mono mt-1">
+                          {typeof val === 'number' ? formatNumber(val, 4) : String(val)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Experiment-level Results */}
+              {(selectedFactor.experimentBacktestResults && Object.keys(selectedFactor.experimentBacktestResults).length > 0) && (
+                <div>
+                  <h4 className="text-sm font-medium mb-1 flex items-center gap-2">
+                    <BarChart3 className="h-3.5 w-3.5 text-muted-foreground" />
+                    实验/模型回测指标
+                    <span className="text-xs text-muted-foreground font-normal">(experiment/model metrics)</span>
+                  </h4>
                   <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                    {Object.entries(
-                      selectedFactor.backtestResults || selectedFactor.backtest_results || {}
-                    ).map(([key, val]) => (
+                    {Object.entries(selectedFactor.experimentBacktestResults).map(([key, val]) => (
                       <div key={key} className="rounded-lg bg-secondary/30 p-3">
                         <div className="text-xs text-muted-foreground truncate" title={key}>
                           {key}

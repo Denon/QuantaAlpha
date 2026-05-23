@@ -7,7 +7,7 @@ The current factor library conflates experiment-level backtest metrics (combined
 - **Per-factor IC metrics**: Compute IC, ICIR, Rank IC, Rank ICIR cross-sectionally per factor against the aligned forward-return label. Store under `factor_metrics` in the factor library. These are the source of truth for factor quality.
 - **Factor quality classification**: Add `quality: high | medium | low | unknown` derived exclusively from `factor_metrics` (Rank IC thresholds: >= 0.03 high, >= 0.01 medium). Entries without `factor_metrics` default to `unknown`.
 - **Separate experiment metrics**: Rename combined model backtest results to `experiment_backtest_results`. Keep `backtest_results` for backward compatibility but stop consuming it in factor cards, quality labels, and ranking.
-- **Scoped backtest caching**: MD5 cache keys now include expression + market + date range + provider URI. Validate cached instruments against the configured market; reject and recompute on mismatch.
+- **Scoped backtest caching**: MD5 cache keys now include expression + market + date range + provider URI + label expression. Validate cached instruments against the configured market (reject on mismatch). Legacy unscoped cache files are ignored; new scoped files are written alongside them.
 - **Backtest feature selection**: Deduplicate identical expressions, sort by abs(Rank IC) then abs(ICIR), apply configurable `max_factors` (default 50) before computation.
 - **Frontend updates**: Factor cards read `factor_metrics` and `quality`; experiment metrics shown only in detail view as "experiment/model metrics."
 
@@ -30,4 +30,4 @@ None — no existing spec files to modify.
 - **`quantaalpha/backtest/`**: New per-factor IC helper, updated factor loader with selection logic, cache key scoping.
 - **`frontend-v2/backend/app.py`**: API responses use `factor_metrics` and `quality`; experiment metrics moved to detail view.
 - **Frontend factor cards/components**: Type definitions and display logic updated for new field schema.
-- **Cache files**: New scoped key format; legacy unscoped cache files rejected on first run, then overwritten with scoped versions.
+- **Cache files**: New scoped key format; legacy unscoped cache files rejected on first run, with new scoped files written alongside them.

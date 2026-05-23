@@ -22,7 +22,16 @@ def instrument_overlap_count(
 def should_reject_cached_factor(
     cached_instruments: Iterable[object] | None,
     target_instruments: Iterable[object] | None,
+    min_overlap: float = 0.80,
 ) -> bool:
+    """Reject cached factor when instrument overlap is below threshold.
+
+    Overlap = len(cached ∩ target) / len(cached).
+    Rejects when cached and target are both non-empty and overlap < min_overlap.
+    """
     cached_set = normalize_instrument_set(cached_instruments)
     target_set = normalize_instrument_set(target_instruments)
-    return bool(cached_set and target_set and cached_set.isdisjoint(target_set))
+    if not cached_set or not target_set:
+        return False
+    overlap = len(cached_set & target_set) / len(cached_set)
+    return overlap < min_overlap

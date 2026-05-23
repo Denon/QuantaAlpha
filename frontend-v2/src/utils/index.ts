@@ -34,7 +34,7 @@ export function formatDateTime(date: string | Date): string {
   });
 }
 
-export function getQualityColor(quality: 'high' | 'medium' | 'low'): string {
+export function getQualityColor(quality: 'high' | 'medium' | 'low' | 'unknown'): string {
   switch (quality) {
     case 'high':
       return 'text-success';
@@ -42,10 +42,12 @@ export function getQualityColor(quality: 'high' | 'medium' | 'low'): string {
       return 'text-warning';
     case 'low':
       return 'text-destructive';
+    case 'unknown':
+      return 'text-muted-foreground';
   }
 }
 
-export function getQualityBadgeClass(quality: 'high' | 'medium' | 'low'): string {
+export function getQualityBadgeClass(quality: 'high' | 'medium' | 'low' | 'unknown'): string {
   switch (quality) {
     case 'high':
       return 'bg-success/20 text-success border-success/50';
@@ -53,6 +55,8 @@ export function getQualityBadgeClass(quality: 'high' | 'medium' | 'low'): string
       return 'bg-warning/20 text-warning border-warning/50';
     case 'low':
       return 'bg-destructive/20 text-destructive border-destructive/50';
+    case 'unknown':
+      return 'bg-muted/30 text-muted-foreground border-muted-foreground/30';
   }
 }
 

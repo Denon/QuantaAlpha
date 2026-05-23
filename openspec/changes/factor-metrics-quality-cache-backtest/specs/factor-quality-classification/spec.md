@@ -12,11 +12,11 @@ The system SHALL assign each factor a `quality` label of `high`, `medium`, `low`
 - **THEN** the factor's `quality` SHALL be `medium`
 
 #### Scenario: Low quality factor
-- **WHEN** a factor has `factor_metrics` with valid Rank IC values but `abs(Rank_IC) < 0.01` or `n_days < 10`
+- **WHEN** a factor has `factor_metrics` with `abs(Rank_IC) < 0.01` and `n_days >= 10`
 - **THEN** the factor's `quality` SHALL be `low`
 
 #### Scenario: Unknown quality factor
-- **WHEN** a factor entry has no `factor_metrics` key or all metric values are null
+- **WHEN** a factor entry has no `factor_metrics` key, all metric values are null, or `n_days < 10`
 - **THEN** the factor's `quality` SHALL be `unknown`
 
 ### Requirement: Quality must not use experiment-level metrics
