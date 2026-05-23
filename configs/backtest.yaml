@@ -17,6 +17,23 @@ experiment:
   output_metrics_file: "backtest_metrics.json"
 
 ######################################################################
+# 0. External data (external_data)
+# Load additional data columns from CSV/Parquet files to supplement Qlib's
+# built-in price-volume fields. Columns become available as $column_name
+# in factor expressions AND are merged as standalone features in the dataset.
+######################################################################
+
+# external_data:
+#   files:
+#     - path: "data/external/market_data.csv"
+#       format: "csv"          # csv | parquet
+#       date_column: "date"
+#       instrument_column: "instrument"
+#       columns:               # optional: descriptions for LLM prompt
+#         market_cap: "Total market capitalization"
+#         pe_ttm: "Price-to-earnings ratio (TTM)"
+
+######################################################################
 # 1. Factor source (factor_source)
 ######################################################################
 

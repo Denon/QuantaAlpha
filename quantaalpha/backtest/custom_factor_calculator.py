@@ -688,9 +688,28 @@ def get_qlib_stock_data(config: Dict) -> pd.DataFrame:
     )
     
     df.columns = fields
-    
+
+    # Inject external data columns as $prefixed columns
+    try:
+        from .external_data import load_external_data
+        ext_df = load_external_data(config)
+        if ext_df is not None and not ext_df.empty:
+            ext_df = ext_df.add_prefix("$")
+            common_idx = df.index.intersection(ext_df.index)
+            if len(common_idx) == 0:
+                logger.warning(
+                    f"External data has zero overlap with Qlib data index. "
+                    f"Check instrument codes and date ranges. "
+                    f"Ext instruments sample: {ext_df.index.get_level_values('instrument').unique()[:5].tolist()}"
+                )
+            df = df.join(ext_df, how="left")
+            joined = df.columns.difference(fields).tolist()
+            logger.debug(f"Injected external data columns: {joined} ({len(common_idx)} overlapping rows)")
+    except Exception as e:
+        logger.warning(f"Failed to load external data: {e}")
+
     logger.debug(f"Loaded stock data: {len(df)} rows")
-    
+
     return df
 
 

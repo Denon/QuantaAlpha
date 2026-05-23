@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 class FactorCalculator:
     """Factor calculator."""
     
+    BUILTIN_COLUMN_DESCRIPTIONS = {
+        "$open": "Opening price",
+        "$high": "High price",
+        "$low": "Low price",
+        "$close": "Closing price",
+        "$volume": "Trading volume",
+        "$vwap": "Volume-weighted average price",
+    }
+
     OPERATIONS_DOC = """
 Only the following operations are allowed in expressions: 
 ### **Cross-sectional Functions**
@@ -109,11 +118,60 @@ Only the following operations are allowed in expressions:
         
         self.output_dir = Path(self.calc_config.get('output_dir', './computed_factors'))
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        self.column_descriptions: Dict[str, str] = {}
+
     def set_data(self, data_df: pd.DataFrame):
         """Set stock data."""
         self.data_df = data_df
-        
+
+    def set_column_descriptions(self, descriptions: Dict[str, str]):
+        """Set column descriptions for LLM prompt enhancement."""
+        self.column_descriptions = descriptions or {}
+
+    def _format_available_columns(self) -> str:
+        """Return formatted list of $prefixed column names for the LLM prompt.
+
+        When descriptions are available (built-in or from external_data config),
+        outputs a multiline list with ``$col: description``. Otherwise falls back
+        to a comma-separated list.
+        """
+        if self.data_df is not None:
+            cols = [c for c in self.data_df.columns if c.startswith("$")]
+        else:
+            cols = ["$open", "$high", "$low", "$close", "$volume", "$vwap"]
+
+        # Auto-load column descriptions from config when not explicitly wired.
+        # This ensures external_data columns descriptions reach the LLM prompt
+        # even when the pipeline hasn't called set_column_descriptions().
+        descriptions = self.column_descriptions
+        if not descriptions:
+            from .external_data import get_column_descriptions
+            descriptions = get_column_descriptions(self.config)
+
+        # Build merged descriptions: built-in first, then external (overrides).
+        # External descriptions use unprefixed names (e.g. "market_cap") from config
+        # columns, while column names use $ prefix. Add $ prefix on lookup.
+        all_descriptions: Dict[str, str] = {}
+        all_descriptions.update(self.BUILTIN_COLUMN_DESCRIPTIONS)
+        for col, desc in descriptions.items():
+            key = col if col.startswith("$") else f"${col}"
+            all_descriptions[key] = desc
+
+        # Only use description format when at least one column has a description
+        has_descriptions = any(col in all_descriptions for col in cols)
+        if has_descriptions:
+            lines = []
+            for col in cols:
+                desc = all_descriptions.get(col)
+                if desc:
+                    lines.append(f"  {col}: {desc}")
+                else:
+                    lines.append(f"  {col}")
+            return "\n" + "\n".join(lines)
+
+        return ", ".join(cols)
+
     def calculate_factors(self, factors: List[Dict]) -> pd.DataFrame:
         """Compute factor values. factors: list of dicts with factor_name, factor_expression, etc."""
         if self.data_df is None:
@@ -265,7 +323,7 @@ The code should:
 
 {self.OPERATIONS_DOC}
 
-The input data is a pandas DataFrame with multi-index (datetime, instrument) and columns: $open, $high, $low, $close, $volume, $vwap.
+The input data is a pandas DataFrame with multi-index (datetime, instrument) and columns: {self._format_available_columns()}.
 
 Please output ONLY the factor expression string that can be directly used with the expression parser. 
 The expression should use $variable format (e.g., $close, $open, $volume).
@@ -356,6 +414,18 @@ class QlibDataProvider:
         self.config = config
         self.data_config = config.get('data', {})
         self._initialized = False
+        self._column_descriptions: Optional[Dict[str, str]] = None
+
+    def get_column_descriptions(self) -> Dict[str, str]:
+        """Return column descriptions from external_data config, cached.
+
+        Returns:
+            Dict mapping column name to description, or empty dict.
+        """
+        if self._column_descriptions is None:
+            from .external_data import get_column_descriptions
+            self._column_descriptions = get_column_descriptions(self.config)
+        return self._column_descriptions
         
     def _init_qlib(self):
         """Initialize Qlib."""
@@ -399,10 +469,29 @@ class QlibDataProvider:
         )
         
         df.columns = fields
-        
+
         df['$return'] = df['$close'] / df.groupby('instrument')['$close'].shift(1) - 1
-        
+
+        # Inject external data columns as $prefixed columns
+        try:
+            from .external_data import load_external_data
+            ext_df = load_external_data(self.config)
+            if ext_df is not None and not ext_df.empty:
+                ext_df = ext_df.add_prefix("$")
+                common_idx = df.index.intersection(ext_df.index)
+                if len(common_idx) == 0:
+                    logger.warning(
+                        f"External data has zero overlap with Qlib data index. "
+                        f"Check instrument codes and date ranges. "
+                        f"Ext instruments sample: {ext_df.index.get_level_values('instrument').unique()[:5].tolist()}"
+                    )
+                df = df.join(ext_df, how="left")
+                joined = df.columns.difference(fields + ['$return']).tolist()
+                logger.info(f"Injected external data columns: {joined} ({len(common_idx)} overlapping rows)")
+        except Exception as e:
+            logger.warning(f"Failed to load external data: {e}")
+
         logger.info(f"Loaded stock data: {len(df)} rows")
-        
+
         return df
 
