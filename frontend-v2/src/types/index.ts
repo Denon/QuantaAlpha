@@ -10,8 +10,8 @@ export type ExecutionPhase =
   | 'analyzing'    // Analyzing results
   | 'completed';   // Completed
 
-// Factor quality level
-export type FactorQuality = 'high' | 'medium' | 'low';
+// Factor quality level (classified exclusively from per-factor Rank IC)
+export type FactorQuality = 'high' | 'medium' | 'low' | 'unknown';
 
 // Task configuration
 export interface TaskConfig {
@@ -95,6 +95,18 @@ export interface LogEntry {
   message: string;
 }
 
+// Per-factor IC metrics (computed per factor against aligned label)
+export interface FactorMetrics {
+  IC: number;
+  IC_std: number;
+  ICIR: number;
+  Rank_IC: number;
+  Rank_IC_std: number;
+  Rank_ICIR: number;
+  n_days: number;
+  n_obs: number;
+}
+
 // Factor information
 export interface Factor {
   factorId: string;
@@ -103,11 +115,18 @@ export interface Factor {
   factorDescription: string;
   quality: FactorQuality;
 
-  // Backtest metrics
+  // Per-factor IC metrics (source of truth for quality)
+  factorMetrics?: FactorMetrics;
   ic: number;
   icir: number;
   rankIc: number;
   rankIcir: number;
+
+  // Experiment-level metrics (shown as "experiment/model metrics" in detail view)
+  experimentBacktestResults?: Record<string, number>;
+  annualReturn: number;
+  maxDrawdown: number;
+  sharpeRatio: number;
 
   // Metadata
   round: number;

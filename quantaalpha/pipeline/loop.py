@@ -231,6 +231,10 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
             factorlib_dir.mkdir(parents=True, exist_ok=True)
             library_path = factorlib_dir / library_filename
             manager = FactorLibraryManager(str(library_path))
+            # Pass per-factor IC metrics if computed by the backtest step
+            factor_metrics_dict = prev_out.get("per_factor_ic_metrics", {})
+            metric_context = prev_out.get("metric_context")
+
             manager.add_factors_from_experiment(
                 experiment=prev_out["factor_backtest"],
                 experiment_id=experiment_id,
@@ -243,6 +247,8 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
                 evolution_phase=evolution_phase,
                 trajectory_id=trajectory_id,
                 parent_trajectory_ids=parent_trajectory_ids,
+                factor_metrics_dict=factor_metrics_dict,
+                metric_context=metric_context,
             )
             logger.info(f"Saved factors to library: {library_path} (phase={evolution_phase})")
         except Exception as e:

@@ -80,10 +80,15 @@ class BacktestRunner:
         print(f"[1/4] Loaded factors: Qlib {len(factor_expressions)}, custom {len(custom_factors)}")
 
         computed_factors = None
+        per_factor_metrics = {}
         if custom_factors:
             computed_factors = self._compute_custom_factors(custom_factors, skip_compute=skip_uncached)
             n_computed = len(computed_factors.columns) if computed_factors is not None and not computed_factors.empty else 0
             print(f"[2/4] Computed custom factors: {n_computed}")
+            if computed_factors is not None and not computed_factors.empty:
+                per_factor_metrics = self._compute_per_factor_ic(computed_factors)
+                n_with_metrics = sum(1 for v in per_factor_metrics.values() if v)
+                print(f"  Computed per-factor IC metrics: {n_with_metrics}/{n_computed}")
         else:
             logger.debug("[2/4] No custom factors, skip")
 
@@ -93,10 +98,12 @@ class BacktestRunner:
         metrics = self._train_and_backtest(dataset, exp_name, rec_name, output_name=output_name)
         total_time = time.time() - start_time_total
         self._print_results(metrics, total_time)
-        self._save_results(metrics, exp_name, factor_source or self.config['factor_source']['type'], 
+        metrics["per_factor_ic_metrics"] = per_factor_metrics
+
+        self._save_results(metrics, exp_name, factor_source or self.config['factor_source']['type'],
                           len(factor_expressions) + len(custom_factors), total_time,
                           output_name=output_name)
-        
+
         return metrics
     
     def _load_factors(self) -> Tuple[Dict[str, str], List[Dict]]:
@@ -139,7 +146,44 @@ class BacktestRunner:
         logger.debug(f"  Factor computation done: {len(result_df.columns)} factors, {len(result_df)} rows")
         
         return result_df
-    
+
+    def _compute_per_factor_ic(self, computed_factors: pd.DataFrame) -> dict:
+        """Compute per-factor IC metrics for each computed factor column.
+
+        Returns dict mapping factor_name -> {factor_metrics: {...}, metric_context: {...}}.
+        """
+        from quantaalpha.backtest.ic_metrics import compute_factor_metrics, MetricContext
+
+        data_config = self.config.get("data", {})
+        dataset_config = self.config.get("dataset", {})
+        label_expr = dataset_config.get("label", "Ref($close, -2) / Ref($close, -1) - 1")
+
+        label_df = self._compute_label(label_expr)
+        if label_df is None or label_df.empty:
+            logger.warning("Cannot compute per-factor IC: label data is empty")
+            return {}
+
+        ctx = MetricContext(
+            provider_uri=data_config.get("provider_uri", ""),
+            market=data_config.get("market", ""),
+            start_time=data_config.get("start_time", ""),
+            end_time=data_config.get("end_time", ""),
+            label_expr=label_expr,
+        )
+
+        result = {}
+        for col in computed_factors.columns:
+            factor_series = computed_factors[col]
+            try:
+                metrics_result = compute_factor_metrics(
+                    factor_series, label_df["LABEL0"], metric_context=ctx
+                )
+                result[col] = metrics_result
+            except Exception as e:
+                logger.debug(f"Per-factor IC failed [{col}]: {e}")
+
+        return result
+
     def _create_dataset(self, 
                        factor_expressions: Dict[str, str],
                        computed_factors: Optional[pd.DataFrame] = None):

@@ -99,21 +99,49 @@ class CustomFactorCalculator:
         logger.debug(f"Data prepared: {len(df)} rows, cols: {list(df.columns)}")
     
     def _get_cache_key(self, expr: str) -> str:
-        """Cache key from expression MD5 hash."""
+        """Cache key from expression MD5 hash (legacy, expression-only)."""
         return hashlib.md5(expr.encode()).hexdigest()
+
+    def _get_scoped_cache_key(self, expr: str) -> str:
+        """Scoped cache key incorporating market, date range, provider, and label.
+
+        Cache key = MD5(expr + market + start_time + end_time + provider_uri + label_expr).
+        This prevents reusing cached factors across different universes or time ranges.
+        """
+        data_config = (self._config or {}).get("data", {})
+        dataset_config = (self._config or {}).get("dataset", {})
+        scoped_parts = "|".join([
+            expr,
+            data_config.get("market", ""),
+            data_config.get("start_time", ""),
+            data_config.get("end_time", ""),
+            data_config.get("provider_uri", ""),
+            dataset_config.get("label", ""),
+        ])
+        return hashlib.md5(scoped_parts.encode()).hexdigest()
     
     def _load_from_cache(self, expr: str) -> Optional[pd.Series]:
-        """Load factor values from cache."""
-        cache_key = self._get_cache_key(expr)
-        cache_file = self.cache_dir / f"{cache_key}.pkl"
-        
-        if cache_file.exists():
+        """Load factor values from cache (tries scoped key first, then legacy)."""
+        # Try scoped key first
+        scoped_key = self._get_scoped_cache_key(expr)
+        scoped_file = self.cache_dir / f"{scoped_key}.pkl"
+        if scoped_file.exists():
             try:
-                result = pd.read_pickle(cache_file)
-                return self._process_cached_result(result, cache_key)
+                result = pd.read_pickle(scoped_file)
+                return self._process_cached_result(result, f"scope:{scoped_key}")
             except Exception as e:
-                logger.debug(f"Cache load failed [{cache_key}]: {e}")
-                return None
+                logger.debug(f"Scoped cache load failed [{scoped_key}]: {e}")
+
+        # Fall back to legacy expression-only key (instrument validation in
+        # _filter_cached_result_to_config will reject cross-market mismatches)
+        legacy_key = self._get_cache_key(expr)
+        legacy_file = self.cache_dir / f"{legacy_key}.pkl"
+        if legacy_file.exists():
+            try:
+                result = pd.read_pickle(legacy_file)
+                return self._process_cached_result(result, f"legacy:{legacy_key}")
+            except Exception as e:
+                logger.debug(f"Legacy cache load failed [{legacy_key}]: {e}")
         return None
 
     def _get_target_instruments(self) -> set[str]:
@@ -234,10 +262,10 @@ class CustomFactorCalculator:
             return None
     
     def _save_to_cache(self, expr: str, result: pd.Series):
-        """Save factor values to cache."""
+        """Save factor values to cache (scoped key)."""
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_key = self._get_cache_key(expr)
+            cache_key = self._get_scoped_cache_key(expr)
             cache_file = self.cache_dir / f"{cache_key}.pkl"
             result.to_pickle(cache_file)
         except Exception as e:

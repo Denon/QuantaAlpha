@@ -21,7 +21,6 @@ wheels/
 pip-wheel-metadata/
 share/python-wheels/
 *.manifest
-*.spec
 
 # ---- Environments ----
 .env
@@ -127,3 +126,13 @@ release-notes.md
 
 # ---- Sphinx documentation ----
 docs/_build/
+
+package-lock.json
+.claude/
+
+
+# 先恢复 openspec 下所有被误伤的 cache 目录本身
+!openspec/**/*cache*/
+
+# 再恢复这些目录下的所有内容
+!openspec/**/*cache*/**

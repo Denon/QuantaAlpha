@@ -53,6 +53,28 @@ class FactorLibraryManager:
         with open(self.library_path, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=2, default=str)
 
+    @staticmethod
+    def is_metric_stale(factor_info: dict, current_context: dict) -> bool:
+        """Check if stored factor_metrics are stale vs current computation context.
+
+        Compares stored metric_context (provider_uri, market, start_time, end_time,
+        label_expr) against current_context. Returns True if any field differs,
+        meaning the stored factor_metrics should be recomputed.
+        """
+        stored = factor_info.get("metric_context")
+        if not stored:
+            # No stored context — if factor_metrics exist, they were computed
+            # without context and should be treated as fresh (legacy).
+            return False
+        for key in ("provider_uri", "market", "start_time", "end_time", "label_expr"):
+            if stored.get(key) != current_context.get(key):
+                logger.debug(
+                    f"Stale factor_metrics detected [{factor_info.get('factor_id', '?')}]: "
+                    f"stored {key}={stored.get(key)} vs current {key}={current_context.get(key)}"
+                )
+                return True
+        return False
+
     def add_factors_from_experiment(
         self,
         experiment,
@@ -66,8 +88,17 @@ class FactorLibraryManager:
         evolution_phase: str = "original",
         trajectory_id: str = "",
         parent_trajectory_ids: Optional[list] = None,
+        factor_metrics_dict: Optional[dict] = None,
+        metric_context: Optional[dict] = None,
     ):
-        """Extract factors from a QlibFactorExperiment and write to library."""
+        """Extract factors from a QlibFactorExperiment and write to library.
+
+        Args:
+            factor_metrics_dict: Optional dict mapping factor_id -> factor_metrics dict.
+                If provided, each factor's entry contains per-factor IC metrics.
+            metric_context: Optional dict with provider_uri, market, start_time, end_time,
+                label_expr describing the context that produced factor_metrics.
+        """
         if experiment is None:
             logger.warning("experiment is None, skip saving factors")
             return
@@ -75,6 +106,7 @@ class FactorLibraryManager:
         feedback_dict = self._extract_feedback(feedback)
         sub_tasks = getattr(experiment, "sub_tasks", []) or []
         sub_workspaces = getattr(experiment, "sub_workspace_list", []) or []
+        from quantaalpha.backtest.ic_metrics import classify_quality
 
         for idx, task in enumerate(sub_tasks):
             factor_name = getattr(task, "factor_name", getattr(task, "name", f"factor_{idx}"))
@@ -116,6 +148,14 @@ class FactorLibraryManager:
                             f"result.h5 missing for {factor_name} ({h5_file}), will recompute from expression in backtest"
                         )
 
+            # Compute per-factor quality (uses factor_metrics exclusively)
+            fm = (factor_metrics_dict or {}).get(factor_id, {})
+            if fm:
+                from quantaalpha.backtest.ic_metrics import FactorICMetrics
+                quality = classify_quality(FactorICMetrics(**fm))
+            else:
+                quality = "unknown"
+
             factor_entry = {
                 "factor_id": factor_id,
                 "factor_name": factor_name,
@@ -124,6 +164,10 @@ class FactorLibraryManager:
                 "factor_description": factor_desc,
                 "factor_formulation": factor_form,
                 "cache_location": cache_location,
+                "factor_metrics": fm,
+                "quality": quality,
+                "metric_context": metric_context or {},
+                "experiment_backtest_results": backtest_results,
                 "metadata": {
                     "experiment_id": experiment_id,
                     "round_number": round_number,
@@ -135,14 +179,15 @@ class FactorLibraryManager:
                     "planning_direction": planning_direction or "",
                     "created_at": datetime.now().isoformat(),
                 },
-                "backtest_results": backtest_results,
+                "backtest_results": backtest_results,  # legacy compat
                 "feedback": feedback_dict,
             }
 
             self.data["factors"][factor_id] = factor_entry
 
             if factor_expr and cache_location.get("result_h5_path"):
-                self._sync_h5_to_md5_cache(factor_expr, cache_location["result_h5_path"])
+                self._sync_h5_to_md5_cache(factor_expr, cache_location["result_h5_path"],
+                                            metric_context=metric_context)
 
         self._save()
         logger.info(
@@ -150,17 +195,34 @@ class FactorLibraryManager:
         )
 
     @staticmethod
+    def _make_scoped_cache_key(expr: str, metric_context: Optional[dict] = None) -> str:
+        """Create a scoped cache key from expression and optional context."""
+        if metric_context:
+            parts = "|".join([
+                expr,
+                metric_context.get("market", ""),
+                metric_context.get("start_time", ""),
+                metric_context.get("end_time", ""),
+                metric_context.get("provider_uri", ""),
+                metric_context.get("label_expr", ""),
+            ])
+        else:
+            parts = expr
+        return hashlib.md5(parts.encode()).hexdigest()
+
+    @staticmethod
     def _sync_h5_to_md5_cache(factor_expression: str, h5_path: str,
-                                cache_dir: Optional[str] = None) -> bool:
-        """Sync factor values from result.h5 to MD5 cache dir (.pkl). Returns True on success."""
+                                cache_dir: Optional[str] = None,
+                                metric_context: Optional[dict] = None) -> bool:
+        """Sync factor values from result.h5 to scoped cache dir (.pkl). Returns True on success."""
         cache_dir = Path(cache_dir or DEFAULT_FACTOR_CACHE_DIR)
         h5_file = Path(h5_path)
 
         if not h5_file.exists():
             return False
 
-        md5_key = hashlib.md5(factor_expression.encode()).hexdigest()
-        pkl_file = cache_dir / f"{md5_key}.pkl"
+        cache_key = FactorLibraryManager._make_scoped_cache_key(factor_expression, metric_context)
+        pkl_file = cache_dir / f"{cache_key}.pkl"
 
         if pkl_file.exists():
             return True
@@ -209,12 +271,18 @@ class FactorLibraryManager:
             if h5_path and Path(h5_path).exists():
                 status = "h5_cached"
                 h5_cached += 1
-            # Check MD5 cache
+            # Check MD5 cache (scoped first, then legacy)
             elif expr:
-                md5_key = hashlib.md5(expr.encode()).hexdigest()
-                if (cache_dir / f"{md5_key}.pkl").exists():
+                mc = finfo.get("metric_context")
+                scoped_key = FactorLibraryManager._make_scoped_cache_key(expr, mc) if mc else ""
+                if scoped_key and (cache_dir / f"{scoped_key}.pkl").exists():
                     status = "md5_cached"
                     md5_cached += 1
+                else:
+                    legacy_key = hashlib.md5(expr.encode()).hexdigest()
+                    if (cache_dir / f"{legacy_key}.pkl").exists():
+                        status = "md5_cached"
+                        md5_cached += 1
 
             if status == "need_compute":
                 need_compute += 1
@@ -262,10 +330,15 @@ class FactorLibraryManager:
                 skipped += 1
                 continue
 
-            md5_key = hashlib.md5(expr.encode()).hexdigest()
-            pkl_file = cache_dir_path / f"{md5_key}.pkl"
+            mc = finfo.get("metric_context")
+            scoped_key = FactorLibraryManager._make_scoped_cache_key(expr, mc) if mc else ""
+            scoped_file = cache_dir_path / f"{scoped_key}.pkl" if scoped_key else None
 
-            if pkl_file.exists():
+            # Check scoped cache first, then legacy
+            legacy_key = hashlib.md5(expr.encode()).hexdigest()
+            legacy_file = cache_dir_path / f"{legacy_key}.pkl"
+
+            if (scoped_file and scoped_file.exists()) or legacy_file.exists():
                 already_cached += 1
                 skipped += 1
                 continue
@@ -277,7 +350,9 @@ class FactorLibraryManager:
             try:
                 cache_dir_path.mkdir(parents=True, exist_ok=True)
                 result = pd.read_hdf(str(h5_path))
-                result.to_pickle(pkl_file)
+                # Write scoped key if context available, else legacy
+                target_file = scoped_file or legacy_file
+                result.to_pickle(target_file)
                 synced += 1
             except Exception:
                 failed += 1

@@ -329,23 +329,47 @@ class FactorLoader:
         json_files = custom_config.get('json_files', [])
         quality_filter = custom_config.get('quality_filter')
         max_factors = custom_config.get('max_factors')
-        
+
         custom_factors = []
-        
+
         for json_file in json_files:
             file_path = Path(json_file)
             if not file_path.exists():
                 logger.warning(f"  Factor library file not found: {json_file}")
                 continue
-            
+
             factors = self._parse_all_factors_from_json(file_path, quality_filter)
             custom_factors.extend(factors)
-        
+
+        # Deduplicate by expression (keep first occurrence)
+        seen_exprs: set = set()
+        deduped = []
+        for f in custom_factors:
+            expr = f.get('factor_expression', '')
+            if expr not in seen_exprs:
+                seen_exprs.add(expr)
+                deduped.append(f)
+        custom_factors = deduped
+
+        # Sort by abs(Rank_IC) desc, then abs(ICIR) desc, then creation time asc
+        # Factors without factor_metrics sort last
+        def _sort_key(f: dict) -> tuple:
+            fm = f.get('factor_metrics', {})
+            rank_ic = abs(fm.get('Rank_IC', 0.0)) if fm else -1.0
+            icir = abs(fm.get('ICIR', 0.0)) if fm else -1.0
+            created = f.get('metadata', {}).get('created_at', '')
+            # Factors with metrics sort before those without
+            has_metrics = 0 if fm else 1
+            return (has_metrics, -rank_ic, -icir, created)
+
+        custom_factors.sort(key=_sort_key)
+
+        # Apply max_factors cap after sorting
         if max_factors and len(custom_factors) > max_factors:
             custom_factors = custom_factors[:max_factors]
-        
+
         logger.debug(f"  Load custom factors: {len(custom_factors)} (custom calculator)")
-        
+
         return {}, custom_factors
     
     def _parse_all_factors_from_json(self, file_path: Path, 
@@ -374,12 +398,15 @@ class FactorLoader:
                 'factor_name': factor_name,
                 'factor_expression': factor_expr,
                 'factor_description': factor_info.get('factor_description', ''),
+                'factor_metrics': factor_info.get('factor_metrics', {}),
+                'quality': factor_info.get('quality', 'unknown'),
+                'metadata': factor_info.get('metadata', {}),
             }
-            
+
             cache_location = factor_info.get('cache_location')
             if cache_location:
                 factor_dict['cache_location'] = cache_location
-            
+
             result.append(factor_dict)
         
         return result

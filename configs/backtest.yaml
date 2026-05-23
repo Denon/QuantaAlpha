@@ -29,7 +29,8 @@ factor_source:
     json_files: []
     # quality_filter: high_quality | medium_quality | low_quality | null
     quality_filter: null
-    max_factors: null
+    # max_factors: hard cap on factors sent to backtest (default 50, null/0 = unlimited)
+    max_factors: 50
     use_llm_for_incompatible: true
 
   combined:
