@@ -81,6 +81,7 @@ class BacktestRunner:
 
         computed_factors = None
         per_factor_metrics = {}
+        external_df = None
         if custom_factors:
             computed_factors = self._compute_custom_factors(custom_factors, skip_compute=skip_uncached)
             n_computed = len(computed_factors.columns) if computed_factors is not None and not computed_factors.empty else 0
@@ -92,7 +93,19 @@ class BacktestRunner:
         else:
             logger.debug("[2/4] No custom factors, skip")
 
-        dataset = self._create_dataset(factor_expressions, computed_factors)
+        # Load external data (if configured) and compute per-factor IC for it
+        try:
+            from .external_data import load_external_data
+            external_df = load_external_data(self.config)
+            if external_df is not None and not external_df.empty:
+                ext_metrics = self._compute_per_factor_ic(external_df)
+                n_ext = sum(1 for v in ext_metrics.values() if v)
+                per_factor_metrics.update(ext_metrics)
+                print(f"  External data metrics: {n_ext}/{len(external_df.columns)} columns")
+        except Exception as e:
+            logger.warning(f"External data loading skipped: {e}")
+
+        dataset = self._create_dataset(factor_expressions, computed_factors, external_df)
         print("[3/4] Dataset created")
 
         metrics = self._train_and_backtest(dataset, exp_name, rec_name, output_name=output_name)
@@ -100,8 +113,9 @@ class BacktestRunner:
         self._print_results(metrics, total_time)
         metrics["per_factor_ic_metrics"] = per_factor_metrics
 
+        ext_factor_count = len(external_df.columns) if external_df is not None else 0
         self._save_results(metrics, exp_name, factor_source or self.config['factor_source']['type'],
-                          len(factor_expressions) + len(custom_factors), total_time,
+                          len(factor_expressions) + len(custom_factors) + ext_factor_count, total_time,
                           output_name=output_name)
 
         return metrics
@@ -184,9 +198,10 @@ class BacktestRunner:
 
         return result
 
-    def _create_dataset(self, 
+    def _create_dataset(self,
                        factor_expressions: Dict[str, str],
-                       computed_factors: Optional[pd.DataFrame] = None):
+                       computed_factors: Optional[pd.DataFrame] = None,
+                       external_df: Optional[pd.DataFrame] = None):
         """Create Qlib dataset (QlibDataLoader or precomputed factors + StaticDataLoader)."""
         from qlib.data.dataset import DatasetH
         from qlib.data.dataset.handler import DataHandlerLP
@@ -205,11 +220,18 @@ class BacktestRunner:
             else:
                 logger.warning(f"  Precomputed factor type invalid: {type(computed_factors)}")
         
-        # Prefer custom factor mode when computed factors exist
-        if has_computed_factors:
+        # Also check for external data
+        has_external = (external_df is not None
+                        and isinstance(external_df, pd.DataFrame)
+                        and not external_df.empty)
+        if has_external:
+            logger.debug(f"  External data: {len(external_df.columns)} columns")
+
+        # Prefer custom factor mode when computed factors or external data exist
+        if has_computed_factors or has_external:
             logger.debug("  Using custom factor mode (precomputed)")
             return self._create_dataset_with_computed_factors(
-                factor_expressions, computed_factors
+                factor_expressions, computed_factors, external_df
             )
         
         # Qlib-only factor mode
@@ -248,7 +270,8 @@ class BacktestRunner:
     
     def _create_dataset_with_computed_factors(self,
                                               factor_expressions: Dict[str, str],
-                                              computed_factors: pd.DataFrame):
+                                              computed_factors: pd.DataFrame,
+                                              external_df: Optional[pd.DataFrame] = None):
         """Create dataset from precomputed factors: compute label, merge with factors, use custom DataHandler."""
         from qlib.data.dataset import DatasetH
         from qlib.data.dataset.handler import DataHandler
@@ -257,16 +280,27 @@ class BacktestRunner:
         data_config = self.config['data']
         dataset_config = self.config['dataset']
         
-        logger.debug(f"  Computed factor count: {len(computed_factors.columns)}")
+        logger.debug(f"  Computed factor count: {len(computed_factors.columns) if computed_factors is not None else 0}")
         label_expr = dataset_config['label']
         label_df = self._compute_label(label_expr)
-        
-        all_feature_dfs = [computed_factors]
+
+        all_feature_dfs = []
+        if computed_factors is not None and not computed_factors.empty:
+            all_feature_dfs.append(computed_factors)
         if factor_expressions:
             logger.debug(f"  Loading {len(factor_expressions)} Qlib-compatible factors")
             qlib_factors = self._load_qlib_factors(factor_expressions)
             if qlib_factors is not None and not qlib_factors.empty:
                 all_feature_dfs.append(qlib_factors)
+        if external_df is not None and not external_df.empty:
+            existing_cols = set()
+            for df in all_feature_dfs:
+                existing_cols.update(df.columns)
+            ext_to_add = [c for c in external_df.columns if c not in existing_cols]
+            if len(ext_to_add) < len(external_df.columns):
+                dropped = set(external_df.columns) - set(ext_to_add)
+                logger.warning(f"Dropping external columns that conflict with computed factors: {dropped}")
+            all_feature_dfs.append(external_df[ext_to_add])
         
         features_df = pd.concat(all_feature_dfs, axis=1)
         features_df = features_df.loc[:, ~features_df.columns.duplicated()]
