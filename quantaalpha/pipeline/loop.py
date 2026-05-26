@@ -4,7 +4,7 @@ Model workflow with session control.
 
 import time
 import pandas as pd
-from typing import Any
+from typing import Any, Optional
 
 from quantaalpha.pipeline.settings import BaseFacSetting
 from quantaalpha.core.developer import Developer
@@ -235,6 +235,17 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
             factor_metrics_dict = prev_out.get("per_factor_ic_metrics", {})
             metric_context = prev_out.get("metric_context")
 
+            # If metrics not provided by the pipeline, compute them from experiment results
+            if not factor_metrics_dict:
+                try:
+                    computed = self._compute_experiment_per_factor_metrics(
+                        prev_out["factor_backtest"]
+                    )
+                    if computed:
+                        factor_metrics_dict, metric_context = computed
+                except Exception as e:
+                    logger.debug(f"Per-factor metrics computation skipped: {e}")
+
             manager.add_factors_from_experiment(
                 experiment=prev_out["factor_backtest"],
                 experiment_id=experiment_id,
@@ -272,6 +283,131 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
             "loop_idx": self.loop_idx,
             "round_idx": self.round_idx,
         }
+
+    def _compute_experiment_per_factor_metrics(self, experiment) -> tuple[dict, Optional[dict]]:
+        """Compute per-factor IC metrics from experiment results for library persistence.
+
+        Reads factor values from each sub-workspace's result.h5, computes the
+        forward-return label via Qlib, and returns (metrics_by_factor_name, metric_context).
+        Returns ({}, None) if computation is not possible.
+        """
+        import pandas as pd
+        from pathlib import Path as _Path
+
+        sub_workspaces = getattr(experiment, "sub_workspace_list", [])
+        sub_tasks = getattr(experiment, "sub_tasks", [])
+        if not sub_workspaces or not sub_tasks:
+            return {}, None
+
+        # Read factor values from each workspace's result.h5
+        factor_values = {}
+        for idx, ws in enumerate(sub_workspaces):
+            ws_path = getattr(ws, "workspace_path", None)
+            if ws_path is None:
+                continue
+            h5_file = _Path(ws_path) / "result.h5"
+            if not h5_file.exists():
+                continue
+
+            factor_name = None
+            if idx < len(sub_tasks):
+                factor_name = getattr(sub_tasks[idx], "factor_name", None)
+            if not factor_name:
+                factor_name = _Path(ws_path).name
+
+            try:
+                data = pd.read_hdf(h5_file)
+            except Exception:
+                continue
+
+            if isinstance(data, pd.DataFrame) and data.shape[1] > 0:
+                factor_values[factor_name] = data.iloc[:, 0]
+            elif isinstance(data, pd.Series):
+                factor_values[factor_name] = data
+
+        if not factor_values:
+            return {}, None
+
+        # Detect date range and instruments from factor data
+        all_dates = []
+        all_instruments = set()
+        for series in factor_values.values():
+            if isinstance(series.index, pd.MultiIndex):
+                all_dates.extend(series.index.get_level_values("datetime"))
+                all_instruments.update(series.index.get_level_values("instrument"))
+
+        if not all_dates:
+            return {}, None
+
+        start_time = min(all_dates).strftime("%Y-%m-%d")
+        end_time = max(all_dates).strftime("%Y-%m-%d")
+        instruments = list(all_instruments)
+
+        # Read label expression and data config from the experiment's template config
+        provider_uri = ""
+        market = ""
+        label_expr = "Ref($close, -2)/Ref($close, -1) - 1"
+        try:
+            exp_ws = getattr(experiment, "experiment_workspace", None)
+            if exp_ws is not None:
+                tmpl = getattr(exp_ws, "template_folder_path", None)
+                if tmpl is not None:
+                    import yaml as _yaml
+                    tmpl_path = _Path(tmpl) / "conf_baseline.yaml"
+                    if tmpl_path.exists():
+                        with open(tmpl_path) as _f:
+                            tmpl_cfg = _yaml.safe_load(_f)
+                        dhc = tmpl_cfg.get("data_handler_config", {})
+                        qinit = tmpl_cfg.get("qlib_init", {})
+                        provider_uri = qinit.get("provider_uri", provider_uri)
+                        market = dhc.get("instruments", "")
+                        label_cfg = dhc.get("data_loader", {}).get("kwargs", {}).get("config", {}).get("label", [])
+                        if label_cfg and len(label_cfg) > 0 and len(label_cfg[0]) > 0:
+                            label_expr = label_cfg[0][0]
+        except Exception as e:
+            logger.debug(f"Cannot read template config: {e}")
+
+        # Compute the forward-return label via Qlib
+        try:
+            from qlib.data import D as _D
+            label_df = _D.features(
+                instruments, [label_expr],
+                start_time=start_time, end_time=end_time, freq="day",
+            )
+            label_df.columns = ["LABEL0"]
+            # Normalize to canonical (datetime, instrument) order
+            if list(label_df.index.names) == ["instrument", "datetime"]:
+                label_df = label_df.swaplevel().sort_index()
+        except Exception as e:
+            logger.debug(f"Cannot compute label for per-factor metrics: {e}")
+            return {}, None
+
+        # Build metric context with all fields for staleness detection
+        from quantaalpha.backtest.ic_metrics import MetricContext
+        ctx = MetricContext(
+            provider_uri=provider_uri,
+            market=market,
+            start_time=start_time,
+            end_time=end_time,
+            label_expr=label_expr,
+        )
+
+        # Compute metrics per factor
+        from quantaalpha.backtest.ic_metrics import compute_factor_metrics
+        result = {}
+        for factor_name, series in factor_values.items():
+            # Normalize factor index to canonical (datetime, instrument) order
+            if isinstance(series.index, pd.MultiIndex) and series.index.names == ["instrument", "datetime"]:
+                series = series.swaplevel().sort_index()
+            try:
+                metrics_result = compute_factor_metrics(
+                    series, label_df["LABEL0"], metric_context=ctx,
+                )
+                result[factor_name] = metrics_result
+            except Exception as e:
+                logger.debug(f"Per-factor IC failed [{factor_name}]: {e}")
+
+        return result, ctx.to_dict()
 
 
 

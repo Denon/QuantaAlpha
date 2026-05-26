@@ -23,15 +23,15 @@ experiment:
 # in factor expressions AND are merged as standalone features in the dataset.
 ######################################################################
 
-# external_data:
-#   files:
-#     - path: "data/external/market_data.csv"
-#       format: "csv"          # csv | parquet
-#       date_column: "date"
-#       instrument_column: "instrument"
-#       columns:               # optional: descriptions for LLM prompt
-#         market_cap: "Total market capitalization"
-#         pe_ttm: "Price-to-earnings ratio (TTM)"
+external_data:
+  files:
+    - path: "data/external/factors_2016_2025.parquet"
+      format: "parquet"          # csv | parquet
+      date_column: "date"
+      instrument_column: "instrument"
+      columns:               # optional: descriptions for LLM prompt
+        size: "Log market cap natural_log_of_market_cap: the natural logarithm of the company's total market capitalization"
+        beta: "The β in the CAPM model, the slope coefficient obtained from an exponentially weighted time series regression of the stock's returns against the market returns (all A-share stock returns weighted by free-float market capitalization) over the past 252 trading days. The half-life of the exponential weighting is 63 trading days. The return of suspended stocks is 0. A stock must have been listed for more than 21 trading days; otherwise, beta is NaN"
 
 ######################################################################
 # 1. Factor source (factor_source)

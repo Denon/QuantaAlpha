@@ -14,6 +14,13 @@ from quantaalpha.utils.env import QTDockerEnv
 from quantaalpha.log import logger
 
 
+def _clean_stale_h5(directory: Path) -> None:
+    """Remove stale .h5 files from target directory before copying fresh data."""
+    for p in directory.iterdir():
+        if p.suffix == ".h5":
+            p.unlink()
+
+
 def generate_data_folder_from_qlib(use_local: bool = True):
     template_path = Path(__file__).parent / "data_template"
     qtde = QTDockerEnv(is_local=use_local)
@@ -37,6 +44,7 @@ def generate_data_folder_from_qlib(use_local: bool = True):
     # Create data dir and copy files
     logger.info("Copying generated data files to workspace")
     Path(FACTOR_COSTEER_SETTINGS.data_folder).mkdir(parents=True, exist_ok=True)
+    _clean_stale_h5(Path(FACTOR_COSTEER_SETTINGS.data_folder))
     shutil.copy(
         daily_pv_all,
         Path(FACTOR_COSTEER_SETTINGS.data_folder) / "daily_pv.h5",
@@ -47,9 +55,14 @@ def generate_data_folder_from_qlib(use_local: bool = True):
     )
 
     Path(FACTOR_COSTEER_SETTINGS.data_folder_debug).mkdir(parents=True, exist_ok=True)
+    _clean_stale_h5(Path(FACTOR_COSTEER_SETTINGS.data_folder_debug))
     shutil.copy(
         daily_pv_debug,
         Path(FACTOR_COSTEER_SETTINGS.data_folder_debug) / "daily_pv.h5",
+    )
+    shutil.copy(
+        daily_pv_debug,
+        Path(FACTOR_COSTEER_SETTINGS.data_folder_debug) / "daily_pv_debug.h5",
     )
     shutil.copy(
         Path(__file__).parent / "data_template" / "README.md",

@@ -3,6 +3,7 @@ potential_direction_transformation: |-
   1. **Clarity**: Ensure the hypothesis is specific and unambiguous.
   2. **Actionability**: The hypothesis should suggest a clear path for experimentation or investigation.
   3. **Relevance**: Ensure the hypothesis is directly related to the potential direction provided by the user.
+  4. **Existing factor variables**: If the direction mentions size, beta, `$size`, or `$beta`, preserve the existing `$size` and `$beta` variables exactly. Treat them as available factor inputs, not concepts to reconstruct. The hypothesis and concise specification should require using `$size` and/or `$beta` directly, and should not reinterpret them as proxies such as dollar volume, market-cap reconstruction, volatility, or momentum.
 
 
 hypothesis_and_feedback: |-
@@ -424,8 +425,12 @@ hypothesis2experiment:
     - $low: low price of the stock on that day.
     - $volume: volume of the stock on that day.
     - $return: daily return of the stock on that day.
+    - $size: Log market cap (natural log of total market capitalization). Already cross-sectionally standardized (z-scored) and winsorized — do NOT apply ZSCORE, RANK, or winsorization again.
+    - $beta: 252-day EW regression slope of stock return vs float-cap-weighted market return (CAPM beta). Already cross-sectionally standardized (z-scored) and winsorized — do NOT apply ZSCORE, RANK, or winsorization again.
 
-    Allowed operators and functions in factor expressions are: 
+    Precomputed factor usage rule: When the target hypothesis or user direction mentions size, beta, `$size`, or `$beta`, every generated expression must include `$size` and/or `$beta` directly. Treat them as first-class input variables; do not substitute proxies such as `$close * $volume`, dollar volume, market-cap reconstruction, volatility, or momentum.
+
+    Allowed operators and functions in factor expressions are:
     {{function_lib_description}}
 
 
@@ -478,4 +483,3 @@ expression_duplication: |-
     - **Action Required**: Reduce the number of distinct base features used. Focus on 2-4 core features instead of using all available features.
     - Target: Use at most {{ base_features_threshold }} distinct base features. Reusing the same feature multiple times is acceptable.
   {% endif %}
-

@@ -22,3 +22,5 @@ $high: high price of the stock on that day.
 $low: low price of the stock on that day.
 $volume: volume of the stock on that day.
 $return: daily return of the stock on that day.
+$size: Log market cap (natural log of total market capitalization). Already cross-sectionally standardized (z-scored) and winsorized — do NOT apply ZSCORE, RANK, or winsorization again.
+$beta: 252-day EW regression slope of stock return vs float-cap-weighted market return (CAPM beta). Already cross-sectionally standardized (z-scored) and winsorized — do NOT apply ZSCORE, RANK, or winsorization again.

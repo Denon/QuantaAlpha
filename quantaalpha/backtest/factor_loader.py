@@ -328,7 +328,13 @@ class FactorLoader:
         custom_config = self.factor_source_config.get('custom', {})
         json_files = custom_config.get('json_files', [])
         quality_filter = custom_config.get('quality_filter')
-        max_factors = custom_config.get('max_factors')
+        # Default cap 50; explicit 0 or null removes the cap (unlimited)
+        if 'max_factors' not in custom_config:
+            max_factors = 50
+        elif custom_config['max_factors'] is None or custom_config['max_factors'] == 0:
+            max_factors = 0
+        else:
+            max_factors = custom_config['max_factors']
 
         custom_factors = []
 
@@ -351,10 +357,25 @@ class FactorLoader:
                 deduped.append(f)
         custom_factors = deduped
 
+        # Build current computation context for staleness detection
+        data_config = self.config.get('data', {})
+        dataset_config = self.config.get('dataset', {})
+        current_context = {
+            "provider_uri": data_config.get("provider_uri", ""),
+            "market": data_config.get("market", ""),
+            "start_time": data_config.get("start_time", ""),
+            "end_time": data_config.get("end_time", ""),
+            "label_expr": dataset_config.get("label", ""),
+        }
+
         # Sort by abs(Rank_IC) desc, then abs(ICIR) desc, then creation time asc
-        # Factors without factor_metrics sort last
+        # Factors without factor_metrics (or with stale metrics) sort last
+        from quantaalpha.factors.library import FactorLibraryManager
         def _sort_key(f: dict) -> tuple:
-            fm = f.get('factor_metrics', {})
+            if FactorLibraryManager.is_metric_stale(f, current_context):
+                fm = {}
+            else:
+                fm = f.get('factor_metrics', {})
             rank_ic = abs(fm.get('Rank_IC', 0.0)) if fm else -1.0
             icir = abs(fm.get('ICIR', 0.0)) if fm else -1.0
             created = f.get('metadata', {}).get('created_at', '')
@@ -393,11 +414,13 @@ class FactorLoader:
             if not factor_expr:
                 continue
             
+            factor_formulation = factor_info.get('factor_formulation', '') or ''
             factor_dict = {
                 'factor_id': factor_id,
                 'factor_name': factor_name,
                 'factor_expression': factor_expr,
                 'factor_description': factor_info.get('factor_description', ''),
+                'factor_formulation': factor_formulation,
                 'factor_metrics': factor_info.get('factor_metrics', {}),
                 'quality': factor_info.get('quality', 'unknown'),
                 'metadata': factor_info.get('metadata', {}),

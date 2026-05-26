@@ -174,6 +174,8 @@ def classify_quality(metrics: Optional[FactorICMetrics], n_days_threshold: int =
     # Check that we have real data
     if metrics.n_days < n_days_threshold:
         return "unknown"
+    if metrics.Rank_IC is None:
+        return "unknown"
     if metrics.Rank_IC == 0.0 and metrics.Rank_IC_std == 0.0 and metrics.n_days == 0:
         return "unknown"
 

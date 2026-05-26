@@ -121,8 +121,7 @@ class CustomFactorCalculator:
         return hashlib.md5(scoped_parts.encode()).hexdigest()
     
     def _load_from_cache(self, expr: str) -> Optional[pd.Series]:
-        """Load factor values from cache (tries scoped key first, then legacy)."""
-        # Try scoped key first
+        """Load factor values from scoped cache. Legacy unscoped caches are rejected."""
         scoped_key = self._get_scoped_cache_key(expr)
         scoped_file = self.cache_dir / f"{scoped_key}.pkl"
         if scoped_file.exists():
@@ -131,17 +130,6 @@ class CustomFactorCalculator:
                 return self._process_cached_result(result, f"scope:{scoped_key}")
             except Exception as e:
                 logger.debug(f"Scoped cache load failed [{scoped_key}]: {e}")
-
-        # Fall back to legacy expression-only key (instrument validation in
-        # _filter_cached_result_to_config will reject cross-market mismatches)
-        legacy_key = self._get_cache_key(expr)
-        legacy_file = self.cache_dir / f"{legacy_key}.pkl"
-        if legacy_file.exists():
-            try:
-                result = pd.read_pickle(legacy_file)
-                return self._process_cached_result(result, f"legacy:{legacy_key}")
-            except Exception as e:
-                logger.debug(f"Legacy cache load failed [{legacy_key}]: {e}")
         return None
 
     def _get_target_instruments(self) -> set[str]:
@@ -695,16 +683,26 @@ def get_qlib_stock_data(config: Dict) -> pd.DataFrame:
         ext_df = load_external_data(config)
         if ext_df is not None and not ext_df.empty:
             ext_df = ext_df.add_prefix("$")
-            common_idx = df.index.intersection(ext_df.index)
-            if len(common_idx) == 0:
-                logger.warning(
-                    f"External data has zero overlap with Qlib data index. "
-                    f"Check instrument codes and date ranges. "
-                    f"Ext instruments sample: {ext_df.index.get_level_values('instrument').unique()[:5].tolist()}"
-                )
-            df = df.join(ext_df, how="left")
-            joined = df.columns.difference(fields).tolist()
-            logger.debug(f"Injected external data columns: {joined} ({len(common_idx)} overlapping rows)")
+            # Drop columns that collide with existing Qlib fields (QLib takes precedence)
+            colliding = ext_df.columns.intersection(df.columns)
+            if len(colliding) > 0:
+                logger.warning(f"Dropping external columns that conflict with Qlib fields: {colliding.tolist()}")
+                ext_df = ext_df.drop(columns=colliding)
+            if ext_df.empty:
+                logger.warning("All external columns conflict with Qlib fields, skipping external data injection")
+            else:
+                common_idx = df.index.intersection(ext_df.index)
+                if len(common_idx) == 0:
+                    logger.warning(
+                        f"External data has zero overlap with Qlib data index. "
+                        f"Check instrument codes and date ranges. "
+                        f"Ext instruments sample: {ext_df.index.get_level_values('instrument').unique()[:5].tolist()}"
+                    )
+                df = df.join(ext_df, how="left")
+                joined = df.columns.difference(fields).tolist()
+                logger.debug(f"Injected external data columns: {joined} ({len(common_idx)} overlapping rows)")
+    except ValueError:
+        raise  # Let missing/invalid column errors propagate
     except Exception as e:
         logger.warning(f"Failed to load external data: {e}")
 
