@@ -97,6 +97,8 @@ def load_external_data(config: Optional[Dict]) -> Optional[pd.DataFrame]:
                 df = _load_parquet(resolved, date_col, inst_col)
             else:
                 df = _load_csv(resolved, date_col, inst_col)
+        except ValueError:
+            raise  # Let missing/invalid column errors propagate
         except Exception as e:
             logger.error(f"Failed to load external data file {resolved}: {e}")
             continue

@@ -75,6 +75,10 @@ def generate_parallel_directions(
     allow_fallback: bool = True,
 ) -> list[str]:
     n = max(1, int(n))
+    base_direction = initial_direction.strip() if initial_direction else ""
+    if n == 1 and base_direction:
+        return [base_direction]
+
     prompts = _load_prompts(prompt_file)
     sys_tpl = prompts.get("system", "")
     user_tpl = prompts.get("user", "")
@@ -114,4 +118,3 @@ def load_run_config(config_path: Path) -> dict[str, Any]:
     except Exception as exc:
         logger.warning(f"Failed to load run config: {exc}")
         return {}
-

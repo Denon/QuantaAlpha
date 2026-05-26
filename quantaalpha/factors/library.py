@@ -149,7 +149,20 @@ class FactorLibraryManager:
                         )
 
             # Compute per-factor quality (uses factor_metrics exclusively)
-            fm = (factor_metrics_dict or {}).get(factor_id, {})
+            fm_raw = (factor_metrics_dict or {}).get(factor_id, None)
+            if not fm_raw:
+                # Fallback: factor_metrics_dict may be keyed by factor_name (e.g. from BacktestRunner)
+                fm_raw = (factor_metrics_dict or {}).get(factor_name, {})
+            # Handle both nested format ({"factor_metrics": {...}, "metric_context": {...}})
+            # and flat format ({IC: ..., Rank_IC: ...})
+            if isinstance(fm_raw, dict) and "factor_metrics" in fm_raw:
+                fm = fm_raw.get("factor_metrics", {})
+                # Use per-factor metric_context if available (overrides top-level)
+                per_fm_ctx = fm_raw.get("metric_context")
+                if per_fm_ctx and not metric_context:
+                    metric_context = per_fm_ctx
+            else:
+                fm = fm_raw or {}
             if fm:
                 from quantaalpha.backtest.ic_metrics import FactorICMetrics
                 quality = classify_quality(FactorICMetrics(**fm))
@@ -271,18 +284,13 @@ class FactorLibraryManager:
             if h5_path and Path(h5_path).exists():
                 status = "h5_cached"
                 h5_cached += 1
-            # Check MD5 cache (scoped first, then legacy)
+            # Check scoped MD5 cache (legacy unscoped caches are rejected)
             elif expr:
                 mc = finfo.get("metric_context")
                 scoped_key = FactorLibraryManager._make_scoped_cache_key(expr, mc) if mc else ""
                 if scoped_key and (cache_dir / f"{scoped_key}.pkl").exists():
                     status = "md5_cached"
                     md5_cached += 1
-                else:
-                    legacy_key = hashlib.md5(expr.encode()).hexdigest()
-                    if (cache_dir / f"{legacy_key}.pkl").exists():
-                        status = "md5_cached"
-                        md5_cached += 1
 
             if status == "need_compute":
                 need_compute += 1
@@ -331,14 +339,16 @@ class FactorLibraryManager:
                 continue
 
             mc = finfo.get("metric_context")
-            scoped_key = FactorLibraryManager._make_scoped_cache_key(expr, mc) if mc else ""
-            scoped_file = cache_dir_path / f"{scoped_key}.pkl" if scoped_key else None
+            if not mc:
+                # No metric_context — cannot create scoped key; skip (legacy unscoped caches rejected)
+                no_source += 1
+                skipped += 1
+                continue
 
-            # Check scoped cache first, then legacy
-            legacy_key = hashlib.md5(expr.encode()).hexdigest()
-            legacy_file = cache_dir_path / f"{legacy_key}.pkl"
+            scoped_key = FactorLibraryManager._make_scoped_cache_key(expr, mc)
+            scoped_file = cache_dir_path / f"{scoped_key}.pkl"
 
-            if (scoped_file and scoped_file.exists()) or legacy_file.exists():
+            if scoped_file.exists():
                 already_cached += 1
                 skipped += 1
                 continue
@@ -350,9 +360,7 @@ class FactorLibraryManager:
             try:
                 cache_dir_path.mkdir(parents=True, exist_ok=True)
                 result = pd.read_hdf(str(h5_path))
-                # Write scoped key if context available, else legacy
-                target_file = scoped_file or legacy_file
-                result.to_pickle(target_file)
+                result.to_pickle(scoped_file)
                 synced += 1
             except Exception:
                 failed += 1

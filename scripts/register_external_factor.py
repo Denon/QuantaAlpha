@@ -52,7 +52,9 @@ def register_factor(
     with open(lib_path, "r", encoding="utf-8") as f:
         library = json.load(f)
 
-    factors = library.get("factors", {})
+    if "factors" not in library:
+        library["factors"] = {}
+    factors = library["factors"]
 
     # Check for conflict by factor_name (not factor_id)
     existing_fid = None

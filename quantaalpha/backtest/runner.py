@@ -94,16 +94,17 @@ class BacktestRunner:
             logger.debug("[2/4] No custom factors, skip")
 
         # Load external data (if configured) and compute per-factor IC for it
-        try:
-            from .external_data import load_external_data
-            external_df = load_external_data(self.config)
-            if external_df is not None and not external_df.empty:
-                ext_metrics = self._compute_per_factor_ic(external_df)
-                n_ext = sum(1 for v in ext_metrics.values() if v)
-                per_factor_metrics.update(ext_metrics)
-                print(f"  External data metrics: {n_ext}/{len(external_df.columns)} columns")
-        except Exception as e:
-            logger.warning(f"External data loading skipped: {e}")
+        from .external_data import load_external_data
+        external_df = load_external_data(self.config)
+        if external_df is not None and not external_df.empty:
+            ext_metrics = self._compute_per_factor_ic(external_df)
+            # Only keep external metrics for columns that don't collide with
+            # computed factors (colliding columns are dropped from the dataset below)
+            ext_metrics = {k: v for k, v in ext_metrics.items()
+                           if k not in per_factor_metrics}
+            n_ext = sum(1 for v in ext_metrics.values() if v)
+            per_factor_metrics.update(ext_metrics)
+            print(f"  External data metrics: {n_ext}/{len(external_df.columns)} columns")
 
         dataset = self._create_dataset(factor_expressions, computed_factors, external_df)
         print("[3/4] Dataset created")
@@ -176,6 +177,13 @@ class BacktestRunner:
         if label_df is None or label_df.empty:
             logger.warning("Cannot compute per-factor IC: label data is empty")
             return {}
+
+        # Normalize both label and factor indices to canonical (datetime, instrument)
+        # so intersection works regardless of source (Qlib returns instrument,datetime).
+        if isinstance(label_df.index, pd.MultiIndex) and label_df.index.names == ["instrument", "datetime"]:
+            label_df = label_df.swaplevel().sort_index()
+        if isinstance(computed_factors.index, pd.MultiIndex) and computed_factors.index.names == ["instrument", "datetime"]:
+            computed_factors = computed_factors.swaplevel().sort_index()
 
         ctx = MetricContext(
             provider_uri=data_config.get("provider_uri", ""),

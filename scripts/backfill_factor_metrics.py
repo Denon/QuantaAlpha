@@ -67,6 +67,9 @@ def backfill_factor_metrics(
     dry_run: bool = False,
     force: bool = False,
     max_factors: int = 0,
+    factor_names: list[str] | None = None,
+    test_start: str | None = None,
+    test_end: str | None = None,
 ):
     """Backfill per-factor IC metrics for factors missing them."""
     from quantaalpha.backtest.ic_metrics import (
@@ -83,6 +86,14 @@ def backfill_factor_metrics(
     dataset_config = config["dataset"]
     label_expr = dataset_config["label"]
 
+    # Use test segment from config if not overridden via CLI
+    segments = dataset_config.get("segments", {})
+    if test_start is None:
+        test_start = segments.get("test", [None, None])[0]
+    if test_end is None:
+        test_end = segments.get("test", [None, None])[1]
+    logger.info(f"Test range: {test_start} ~ {test_end}")
+
     # Load library
     lib_path = Path(library_path)
     if not lib_path.exists():
@@ -97,10 +108,23 @@ def backfill_factor_metrics(
     logger.info(f"Library: {total} factors")
 
     # Find factors needing backfill
+    from quantaalpha.factors.library import FactorLibraryManager
+    current_context = {
+        "provider_uri": data_config.get("provider_uri", ""),
+        "market": data_config.get("market", ""),
+        "start_time": "",
+        "end_time": "",
+        "label_expr": label_expr,
+    }
     to_backfill = {}
     for fid, finfo in factors.items():
+        fname = finfo.get("factor_name", "")
+        # Skip if factor_names specified and this factor isn't in the list
+        if factor_names and fname not in factor_names:
+            continue
         has_metrics = bool(finfo.get("factor_metrics"))
-        if force or not has_metrics:
+        is_stale = FactorLibraryManager.is_metric_stale(finfo, current_context) if has_metrics else False
+        if force or not has_metrics or is_stale:
             to_backfill[fid] = finfo
 
     if not to_backfill:
@@ -171,10 +195,15 @@ def backfill_factor_metrics(
 
         logger.info(f"  Factor data range: {fac_start} ~ {fac_end}, instruments: {len(instruments)}")
 
-        # Compute label for this specific scope
+        # Determine evaluation range: use test range if available, else full factor range
+        eval_start = test_start if test_start else fac_start
+        eval_end = test_end if test_end else fac_end
+        logger.info(f"  Evaluation range: {eval_start} ~ {eval_end}")
+
+        # Compute label for the evaluation range
         try:
             label_df = compute_label_for_scope(
-                instruments, fac_start, fac_end, label_expr
+                instruments, eval_start, eval_end, label_expr
             )
             logger.info(f"  Label rows: {len(label_df)}")
             # Qlib returns (instrument, datetime) index; factor h5 uses (datetime, instrument).
@@ -190,12 +219,12 @@ def backfill_factor_metrics(
                 skipped_error += 1
             continue
 
-        # Build metric context for this scope
+        # Build metric context for this scope (use evaluation range)
         ctx = MetricContext(
             provider_uri=data_config.get("provider_uri", ""),
             market=data_config.get("market", ""),
-            start_time=fac_start,
-            end_time=fac_end,
+            start_time=eval_start,
+            end_time=eval_end,
             label_expr=label_expr,
         ).to_dict()
 
@@ -231,6 +260,22 @@ def backfill_factor_metrics(
                 factor_series = factor_values.iloc[:, 0]
             else:
                 factor_series = factor_values
+
+            # Filter factor values to evaluation range
+            if eval_start or eval_end:
+                dt = factor_series.index.get_level_values("datetime")
+                mask = pd.Series(True, index=factor_series.index)
+                if eval_start:
+                    mask &= dt >= eval_start
+                if eval_end:
+                    mask &= dt <= eval_end
+                factor_series = factor_series[mask]
+                dt_remaining = factor_series.index.get_level_values("datetime")
+                n_days = len(dt_remaining.unique())
+                n_obs = len(factor_series)
+                logger.info(f"  [{factor_name}] filtered to eval range: "
+                           f"{dt_remaining.min():%Y-%m-%d} ~ {dt_remaining.max():%Y-%m-%d}, "
+                           f"{n_days} days, {n_obs} obs")
 
             try:
                 metrics_result = compute_factor_metrics(
@@ -297,6 +342,18 @@ def main():
         "--max-factors", type=int, default=0,
         help="Max factors to backfill (0 = unlimited)",
     )
+    parser.add_argument(
+        "--factor-names", "-n", type=str, nargs="+", default=None,
+        help="Only backfill specific factor names (e.g. -n Size_Beta_Squared_Difference)",
+    )
+    parser.add_argument(
+        "--test-start", type=str, default=None,
+        help="Test period start (overrides config segments.test)",
+    )
+    parser.add_argument(
+        "--test-end", type=str, default=None,
+        help="Test period end (overrides config segments.test)",
+    )
     args = parser.parse_args()
 
     backfill_factor_metrics(
@@ -305,6 +362,9 @@ def main():
         dry_run=args.dry_run,
         force=args.force,
         max_factors=args.max_factors,
+        factor_names=args.factor_names,
+        test_start=args.test_start,
+        test_end=args.test_end,
     )
 
 

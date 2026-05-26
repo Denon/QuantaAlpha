@@ -312,6 +312,7 @@ Only the following operations are allowed in expressions:
         factor_name = factor_info.get('factor_name', 'unknown')
         factor_expr = factor_info.get('factor_expression', '')
         factor_desc = factor_info.get('factor_description', '')
+        factor_formulation = factor_info.get('factor_formulation', '') or ''
         variables = factor_info.get('variables', {})
         
         system_prompt = f"""You are an expert quantitative analyst. Your task is to convert factor expressions into executable Python code.
@@ -330,11 +331,12 @@ The expression should use $variable format (e.g., $close, $open, $volume).
 Do NOT include any Python code, just the expression string.
 """
 
+        formulation_line = f"\nFactor Formulation: {factor_formulation}" if factor_formulation else ""
         user_prompt = f"""Convert this factor into an expression:
 
 Factor Name: {factor_name}
 Factor Expression: {factor_expr}
-Factor Description: {factor_desc}
+Factor Description: {factor_desc}{formulation_line}
 Variables: {json.dumps(variables, ensure_ascii=False)}
 
 Please provide the corrected expression that uses only the allowed operations.
@@ -478,16 +480,26 @@ class QlibDataProvider:
             ext_df = load_external_data(self.config)
             if ext_df is not None and not ext_df.empty:
                 ext_df = ext_df.add_prefix("$")
-                common_idx = df.index.intersection(ext_df.index)
-                if len(common_idx) == 0:
-                    logger.warning(
-                        f"External data has zero overlap with Qlib data index. "
-                        f"Check instrument codes and date ranges. "
-                        f"Ext instruments sample: {ext_df.index.get_level_values('instrument').unique()[:5].tolist()}"
-                    )
-                df = df.join(ext_df, how="left")
-                joined = df.columns.difference(fields + ['$return']).tolist()
-                logger.info(f"Injected external data columns: {joined} ({len(common_idx)} overlapping rows)")
+                # Drop columns that collide with existing Qlib fields (QLib takes precedence)
+                colliding = ext_df.columns.intersection(df.columns)
+                if len(colliding) > 0:
+                    logger.warning(f"Dropping external columns that conflict with Qlib fields: {colliding.tolist()}")
+                    ext_df = ext_df.drop(columns=colliding)
+                if ext_df.empty:
+                    logger.warning("All external columns conflict with Qlib fields, skipping external data injection")
+                else:
+                    common_idx = df.index.intersection(ext_df.index)
+                    if len(common_idx) == 0:
+                        logger.warning(
+                            f"External data has zero overlap with Qlib data index. "
+                            f"Check instrument codes and date ranges. "
+                            f"Ext instruments sample: {ext_df.index.get_level_values('instrument').unique()[:5].tolist()}"
+                        )
+                    df = df.join(ext_df, how="left")
+                    joined = df.columns.difference(fields + ['$return']).tolist()
+                    logger.info(f"Injected external data columns: {joined} ({len(common_idx)} overlapping rows)")
+        except ValueError:
+            raise  # Let missing/invalid column errors propagate
         except Exception as e:
             logger.warning(f"Failed to load external data: {e}")
 

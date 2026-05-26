@@ -144,9 +144,9 @@ def _classify_quality(factor_info: Dict[str, Any]) -> str:
     fm = factor_info.get("factor_metrics")
     if not fm:
         return "unknown"
-    rank_ic = fm.get("Rank_IC", 0.0)
+    rank_ic = fm.get("Rank_IC")
     n_days = fm.get("n_days", 0)
-    if n_days < 10:
+    if rank_ic is None or n_days < 10:
         return "unknown"
     abs_rank_ic = abs(rank_ic)
     if abs_rank_ic >= 0.03:
