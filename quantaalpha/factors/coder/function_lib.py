@@ -146,6 +146,34 @@ def TS_SUM(df:pd.DataFrame, p:int=5):
     return df.groupby('instrument').transform(lambda x: x.rolling(p, min_periods=1).sum())
 
 
+def SUMIF(x: pd.DataFrame, n: int, cond: pd.DataFrame) -> pd.DataFrame:
+    """Per-instrument rolling sum of x over n periods where cond is True.
+
+    Equivalent to WorldQuant SUMIF(x, n, cond):
+      for each instrument, sum x[t] for t in [t-n+1, t] where cond[t] is True.
+    """
+    # Use values to avoid column name alignment issues; preserve index
+    masked = pd.DataFrame(
+        x.values * cond.astype(float).values,
+        index=x.index,
+        columns=x.columns,
+    )
+    return masked.groupby('instrument').transform(
+        lambda s: s.rolling(n, min_periods=1).sum()
+    )
+
+
+def COUNT(cond: pd.DataFrame, n: int) -> pd.DataFrame:
+    """Per-instrument rolling count of cond being True over n periods.
+
+    Equivalent to WorldQuant COUNT(cond, n):
+      for each instrument, count days where cond[t] is True in the last n periods.
+    """
+    return cond.astype(float).groupby('instrument').transform(
+        lambda s: s.rolling(n, min_periods=1).sum()
+    )
+
+
 @datatype_adapter
 def TS_ARGMAX(df: pd.DataFrame, p: int = 5):
     """Days since max in past p days."""
@@ -191,6 +219,9 @@ def DELAY(df:pd.DataFrame, p:int=1):
     """Delay data by p periods."""
     assert p >= 0, ValueError("DELAY period must be >= 0 (look-ahead bias)")
     return df.groupby('instrument').transform(lambda x: x.shift(p))
+
+# WorldQuant/Qlib alias
+Ref = DELAY
 
 
 def TS_CORR(df1:pd.Series, df2: np.ndarray | pd.Series, p:int=5):
@@ -678,6 +709,17 @@ def _arithmetic_with_alignment(df1, df2, op_func):
         except Exception:
             pass
     
+    # If both are DataFrames with same index but potentially different column names,
+    # use numpy values to avoid pandas column-name alignment producing NaN.
+    if isinstance(df1, pd.DataFrame) and isinstance(df2, pd.DataFrame):
+        if df1.index.equals(df2.index) and list(df1.columns) != list(df2.columns):
+            result = pd.DataFrame(
+                op_func(df1.values, df2.values),
+                index=df1.index,
+                columns=df1.columns,
+            )
+            return result
+
     try:
         result = op_func(df1, df2)
     except (ValueError, TypeError) as e:
