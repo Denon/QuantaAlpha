@@ -21,7 +21,7 @@ The system SHALL load and concatenate all candidate factor features (Qlib factor
 
 ### Requirement: Apply fold window to runner config
 
-The system SHALL update the `BacktestRunner` config's `dataset.segments` and `backtest.backtest.start_time/end_time` to match a fold's train, valid, and test date ranges. The original config SHALL be deep-copied so subsequent folds are unaffected.
+The system SHALL update the `BacktestRunner` config's `dataset.segments` and `backtest.backtest.start_time/end_time` to match a fold's train, valid, and test date ranges.
 
 #### Scenario: Runner config reflects fold windows
 
@@ -39,14 +39,14 @@ The system SHALL create a Qlib dataset from a selected feature DataFrame (subset
 
 ### Requirement: Orchestrate full walk-forward backtest
 
-The system SHALL iterate through all folds, for each fold: select top-k factors from the in-sample selection window, apply fold-specific train/valid/test windows, run a backtest with only the selected factors, and collect results.
+The system SHALL iterate through all folds, for each fold: deep-copy the runner config from the original baseline (so fold windows never leak between folds), select top-k factors from the in-sample selection window, apply fold-specific train/valid/test windows, run a backtest with only the selected factors, and collect results.
 
 Per-fold output SHALL include the fold ID, date ranges, selected factor names, and backtest metrics. Aggregate metrics SHALL be computed as the mean of each numeric metric across all folds.
 
-#### Scenario: Two-fold walk-forward produces two fold results
+#### Scenario: Two-fold walk-forward produces two fold results with config isolation
 
 - **WHEN** a walk-forward run produces 2 folds
-- **THEN** the `WalkForwardResult.folds` list has length 2 and each fold has a non-empty `selected_factors` list
+- **THEN** the `WalkForwardResult.folds` list has length 2, each fold has a non-empty `selected_factors` list, and each fold's `runner.config` was restored from the original baseline before applying the fold's windows
 
 #### Scenario: Aggregate metrics include mean of numeric fields
 
@@ -65,6 +65,13 @@ The system SHALL save per-fold results as `walk_forward_folds.json`, selected fa
 ### Requirement: CLI dispatch to walk-forward mode
 
 The system SHALL accept a `--walk-forward` CLI flag on `run_backtest.py`. When the flag is present OR `walk_forward.enabled` is true in the YAML config, the system SHALL dispatch to `WalkForwardBacktestRunner` instead of the default static backtest path.
+
+Before dispatching to the walk-forward orchestrator, the system SHALL apply all CLI overrides (`--factor-source`, `--factor-json`, `--experiment`) to the runner config, identical to how they are applied in the static backtest path.
+
+#### Scenario: --walk-forward flag triggers walk-forward mode with CLI overrides applied
+
+- **WHEN** `run_backtest.py` is called with `--walk-forward --factor-source combined --factor-json data/results/factor_library.json`
+- **THEN** the walk-forward orchestrator is invoked and `runner.config["factor_source"]["type"]` is overridden to "combined" before execution begins
 
 #### Scenario: --walk-forward flag triggers walk-forward mode
 

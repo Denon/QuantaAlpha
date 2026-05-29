@@ -71,11 +71,21 @@
 
 ### 6. CLI Integration
 
-**Decision**: Single `--walk-forward` flag on the existing `run_backtest.py` script, plus YAML-based enablement via `walk_forward.enabled: true`.
+**Decision**: Single `--walk-forward` flag on the existing `run_backtest.py` script, plus YAML-based enablement via `walk_forward.enabled: true`. All existing CLI overrides (`--factor-source`, `--factor-json`, `--experiment`) MUST be applied to the runner config identically for both static and walk-forward paths, before the walk-forward orchestrator is invoked.
 
 **Alternatives considered**:
 - *Separate entry point script*: Unnecessary — the config loading, factor source selection, and logging infrastructure are shared.
 - *Only CLI or only config*: Providing both lets scripted pipelines use config while ad-hoc runs use the CLI flag.
+
+### 7. Config Isolation Between Folds
+
+**Decision**: The `WalkForwardBacktestRunner` deep-copies the runner's original config before the fold loop and restores from the baseline copy before each fold's windows are applied. `_apply_backtest_window` mutates the runner's config in place — it is a simple setter, not an isolation mechanism.
+
+**Alternatives considered**:
+- *Make `_apply_backtest_window` snapshot/restore internally*: Burdens a simple helper with state management it shouldn't own.
+- *Snapshot-free design where each fold creates a fresh runner*: Overhead of Qlib re-initialization per fold.
+
+**Rationale**: The orchestrator owns the lifecycle and is the right place for isolation. Clean restore semantics — one deep copy per fold, no mutation spillage.
 
 ## Risks / Trade-offs
 
