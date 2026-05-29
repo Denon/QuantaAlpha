@@ -98,6 +98,66 @@ def test_load_walk_forward_config_disabled_by_default():
     assert cfg.enabled is False
 
 
+def test_forward_window_capped_at_global_end_time():
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-09-30",
+        selection_window_months=6,
+        forward_window_months=6,
+        step_months=6,
+        selection_lag_days=2,
+    )
+
+    folds = generate_walk_forward_folds(cfg)
+
+    assert len(folds) == 1
+    assert folds[0].forward_end == pd.Timestamp("2015-09-30")
+
+
+def test_output_files_written_even_when_no_factors_selected(tmp_path):
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=260, freq="D")
+    instruments = ["A"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.ones(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f": [np.nan] * len(idx)}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.0}
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-09-30",
+        selection_window_months=3,
+        forward_window_months=3,
+        step_months=3,
+        selection_lag_days=2,
+        top_k=1,
+        min_selection_days=2,
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+    wf.run()
+
+    csv_path = tmp_path / "walk_forward_selected_factors.csv"
+    assert csv_path.exists(), f"Expected {csv_path} to exist even with no selected factors"
+    folds_path = tmp_path / "walk_forward_folds.json"
+    assert folds_path.exists()
+    summary_path = tmp_path / "walk_forward_summary.json"
+    assert summary_path.exists()
+
+
 # --- Precomputed dataset tests ---
 
 
