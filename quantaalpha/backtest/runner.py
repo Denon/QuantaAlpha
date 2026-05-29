@@ -280,14 +280,12 @@ class BacktestRunner:
                                               factor_expressions: Dict[str, str],
                                               computed_factors: pd.DataFrame,
                                               external_df: Optional[pd.DataFrame] = None):
-        """Create dataset from precomputed factors: compute label, merge with factors, use custom DataHandler."""
-        from qlib.data.dataset import DatasetH
-        from qlib.data.dataset.handler import DataHandler
-        from qlib.data import D
-        
-        data_config = self.config['data']
+        """Create dataset from precomputed factors: compute label, merge with factors, delegate to
+        the shared `build_precomputed_dataset` for alignment, preprocessing, and DatasetH construction."""
+        from quantaalpha.backtest.precomputed_dataset import build_precomputed_dataset
+
         dataset_config = self.config['dataset']
-        
+
         logger.debug(f"  Computed factor count: {len(computed_factors.columns) if computed_factors is not None else 0}")
         label_expr = dataset_config['label']
         label_df = self._compute_label(label_expr)
@@ -309,220 +307,108 @@ class BacktestRunner:
                 dropped = set(external_df.columns) - set(ext_to_add)
                 logger.warning(f"Dropping external columns that conflict with computed factors: {dropped}")
             all_feature_dfs.append(external_df[ext_to_add])
-        
+
         features_df = pd.concat(all_feature_dfs, axis=1)
         features_df = features_df.loc[:, ~features_df.columns.duplicated()]
         logger.debug(f"  Total factor count: {len(features_df.columns)}")
 
-        def _normalize_multiindex(df, df_name):
-            """Ensure MultiIndex has standard (datetime, instrument) level names."""
-            if not isinstance(df.index, pd.MultiIndex):
-                logger.warning(f"  {df_name} index is not MultiIndex: {type(df.index)}")
-                return df
-            
-            names = list(df.index.names)
-            logger.debug(f"  {df_name} index levels: {names}, "
-                        f"dtypes: {[str(df.index.get_level_values(i).dtype) for i in range(len(names))]}, "
-                        f"len: {len(df)}")
-            
-            new_names = list(names)
-            for i, name in enumerate(names):
-                level_vals = df.index.get_level_values(i)
-                if name == 'datetime' or name == 'date':
-                    new_names[i] = 'datetime'
-                elif name == 'instrument' or name == 'stock':
-                    new_names[i] = 'instrument'
-                elif name is None:
-                    # Infer from dtype
-                    if pd.api.types.is_datetime64_any_dtype(level_vals):
-                        new_names[i] = 'datetime'
-                    elif level_vals.dtype == object or pd.api.types.is_string_dtype(level_vals):
-                        new_names[i] = 'instrument'
-            
-            if new_names != names:
-                logger.debug(f"  {df_name} index renamed: {names} -> {new_names}")
-                df.index = df.index.set_names(new_names)
-            actual_names = list(df.index.names)
-            if len(actual_names) == 2 and actual_names == ['instrument', 'datetime']:
-                df = df.swaplevel()
-                df = df.sort_index()
-                logger.debug(f"  {df_name} index swapped to (datetime, instrument)")
-            
-            return df
-        
-        features_df = _normalize_multiindex(features_df, "features")
-        label_df = _normalize_multiindex(label_df, "label")
-        
-        common_index = features_df.index.intersection(label_df.index)
-        if len(common_index) == 0 and len(features_df) > 0 and len(label_df) > 0:
-            logger.warning("  Index intersection empty, aligning datetime types...")
-            feat_dt = features_df.index.get_level_values('datetime')
-            label_dt = label_df.index.get_level_values('datetime')
-            logger.debug(f"  features datetime dtype={feat_dt.dtype}, sample={feat_dt[:3].tolist()}")
-            logger.debug(f"  label    datetime dtype={label_dt.dtype}, sample={label_dt[:3].tolist()}")
-            
-            feat_inst = features_df.index.get_level_values('instrument')
-            label_inst = label_df.index.get_level_values('instrument')
-            logger.debug(f"  features instrument sample={feat_inst[:3].tolist()}")
-            logger.debug(f"  label    instrument sample={label_inst[:3].tolist()}")
-            
-            try:
-                if not pd.api.types.is_datetime64_any_dtype(feat_dt):
-                    features_df.index = features_df.index.set_levels(
-                        pd.to_datetime(feat_dt.unique()), level='datetime'
-                    )
-                    logger.debug("  features datetime converted to Timestamp")
-                if not pd.api.types.is_datetime64_any_dtype(label_dt):
-                    label_df.index = label_df.index.set_levels(
-                        pd.to_datetime(label_dt.unique()), level='datetime'
-                    )
-                    logger.debug("  label datetime converted to Timestamp")
-            except Exception as e:
-                logger.warning(f"  datetime type conversion failed: {e}")
-            common_index = features_df.index.intersection(label_df.index)
-            logger.debug(f"  Intersection size after align: {len(common_index)}")
+        dataset = build_precomputed_dataset(
+            features_df=features_df,
+            label_df=label_df,
+            segments=dataset_config["segments"],
+        )
 
-        if len(common_index) == 0:
-            logger.warning("  Index intersection still empty, trying merge...")
-            feat_reset = features_df.reset_index()
-            label_reset = label_df.reset_index()
-            dt_col = 'datetime' if 'datetime' in feat_reset.columns else feat_reset.columns[0]
-            inst_col = 'instrument' if 'instrument' in feat_reset.columns else feat_reset.columns[1]
-            
-            merged = pd.merge(
-                feat_reset, label_reset,
-                on=[dt_col, inst_col],
-                how='inner'
-            )
-            logger.debug(f"  Merged rows: {len(merged)}")
-            if len(merged) == 0:
-                raise ValueError(
-                    f"Factor and label data could not be aligned. "
-                    f"features: {len(features_df)} rows, index names={list(features_df.index.names)}; "
-                    f"label: {len(label_df)} rows, index names={list(label_df.index.names)}"
-                )
-            
-            merged = merged.set_index([dt_col, inst_col])
-            merged.index.names = ['datetime', 'instrument']
-            
-            feature_cols = [c for c in features_df.columns if c in merged.columns]
-            label_cols = [c for c in label_df.columns if c in merged.columns]
-            features_df = merged[feature_cols]
-            label_df = merged[label_cols]
-        else:
-            features_df = features_df.loc[common_index]
-            label_df = label_df.loc[common_index]
-        
-        logger.debug(f"  Data rows: {len(features_df)}")
-        if len(features_df) == 0:
-            raise ValueError("No rows after index alignment; cannot run backtest")
-        combined_df = pd.concat([features_df, label_df], axis=1)
-        from qlib.data.dataset.processor import Fillna, ProcessInf, CSRankNorm, DropnaLabel
-        feature_cols = list(features_df.columns)
-        label_cols = list(label_df.columns)
-        combined_df[feature_cols] = combined_df[feature_cols].fillna(0)
-        combined_df[feature_cols] = combined_df[feature_cols].replace([np.inf, -np.inf], 0)
-        dt_level = combined_df.index.names[0] if combined_df.index.names[0] else 0
-        for col in feature_cols:
-            combined_df[col] = combined_df.groupby(level=dt_level)[col].transform(
-                lambda x: (x.rank(pct=True) - 0.5) if len(x) > 1 else 0
-            )
-        combined_df = combined_df.dropna(subset=label_cols)
-        for col in label_cols:
-            combined_df[col] = combined_df.groupby(level=dt_level)[col].transform(
-                lambda x: (x.rank(pct=True) - 0.5) if len(x) > 1 else 0
-            )
-        
-        logger.debug(f"  Rows after preprocessing: {len(combined_df)}")
-        feature_tuples = [('feature', col) for col in feature_cols]
-        label_tuples = [('label', col) for col in label_cols]
-        
-        combined_df_multi = combined_df.copy()
-        combined_df_multi.columns = pd.MultiIndex.from_tuples(
-            feature_tuples + label_tuples
-        )
-        
-        class PrecomputedDataHandler(DataHandler):
-            """DataHandler for precomputed data."""
-            
-            def __init__(self, data_df, segments):
-                self._data = data_df
-                self._segments = segments
-            
-            @property
-            def data_loader(self):
-                return None
-            
-            @property
-            def instruments(self):
-                try:
-                    return list(self._data.index.get_level_values('instrument').unique())
-                except KeyError:
-                    return list(self._data.index.get_level_values(1).unique())
-            
-            def fetch(self, selector=None, level='datetime', col_set='feature',
-                     data_key=None, squeeze=False, proc_func=None):
-                if col_set in ('feature', 'label'):
-                    result = self._data[col_set].copy()
-                elif col_set == '__all' or col_set is None:
-                    result = self._data.copy()
-                else:
-                    if isinstance(col_set, (list, tuple)):
-                        result = self._data[list(col_set)].copy()
-                    else:
-                        result = self._data.copy()
-                if selector is not None:
-                    try:
-                        dates = result.index.get_level_values('datetime')
-                    except KeyError:
-                        dates = result.index.get_level_values(0)
-                    if isinstance(selector, tuple) and len(selector) == 2:
-                        start, end = selector
-                        mask = (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))
-                        result = result.loc[mask]
-                    elif isinstance(selector, slice):
-                        start = selector.start
-                        end = selector.stop
-                        if start is not None and end is not None:
-                            mask = (dates >= pd.Timestamp(start)) & (dates <= pd.Timestamp(end))
-                            result = result.loc[mask]
-                
-                if squeeze and result.shape[1] == 1:
-                    result = result.iloc[:, 0]
-                
-                return result
-            
-            def get_cols(self, col_set='feature'):
-                if col_set in self._data.columns.get_level_values(0):
-                    return list(self._data[col_set].columns)
-                return list(self._data.columns.get_level_values(1))
-            
-            def setup_data(self, **kwargs):
-                pass
-            
-            def config(self, **kwargs):
-                pass
-        
-        handler = PrecomputedDataHandler(combined_df_multi, dataset_config['segments'])
-        dataset = DatasetH(
-            handler=handler,
-            segments=dataset_config['segments']
-        )
-        
-        logger.debug(f"  Custom factor mode: {len(feature_cols)} factors, {len(combined_df)} rows, train={dataset_config['segments']['train']}")
-        
+        logger.debug(f"  Custom factor mode: {len(features_df.columns)} factors, train={dataset_config['segments']['train']}")
+
         return dataset
     
+    def _apply_backtest_window(
+        self, train: tuple[str, str], valid: tuple[str, str], test: tuple[str, str]
+    ) -> None:
+        """Mutate this runner's config segments and backtest range for a single fold.
+
+        The walk-forward orchestrator is responsible for deep-copying the config
+        baseline before each fold so mutations do not leak.
+        """
+        self.config["dataset"]["segments"] = {
+            "train": [train[0], train[1]],
+            "valid": [valid[0], valid[1]],
+            "test": [test[0], test[1]],
+        }
+        self.config["backtest"]["backtest"]["start_time"] = test[0]
+        self.config["backtest"]["backtest"]["end_time"] = test[1]
+
+    def _create_dataset_from_feature_frame(self, features_df: pd.DataFrame):
+        """Build a Qlib dataset from a pre-selected feature frame and the label defined in config."""
+        label_df = self._compute_label(self.config["dataset"]["label"])
+        from quantaalpha.backtest.precomputed_dataset import build_precomputed_dataset
+
+        return build_precomputed_dataset(
+            features_df=features_df,
+            label_df=label_df,
+            segments=self.config["dataset"]["segments"],
+        )
+
+    def run_feature_frame(
+        self,
+        features_df: pd.DataFrame,
+        exp_name: str,
+        rec_name: str,
+        output_name: str | None = None,
+    ) -> dict:
+        """Run a backtest end-to-end from a pre-loaded feature DataFrame.
+
+        Used by the walk-forward orchestrator to execute a single fold after
+        factor selection has been applied.
+        """
+        dataset = self._create_dataset_from_feature_frame(features_df)
+        return self._train_and_backtest(dataset, exp_name, rec_name, output_name=output_name)
+
+    def prepare_feature_frame(
+        self, custom_factors: list[dict] | None = None, skip_uncached: bool = False
+    ) -> pd.DataFrame:
+        """Load and concatenate all candidate factor features once.
+
+        Covers Qlib expression factors, custom computed factors, and external data.
+        Returns a single DataFrame with unique column names suitable for per-fold
+        factor selection. All frames are normalized to (instrument, datetime) index
+        to match typical Qlib output.
+        """
+        from quantaalpha.backtest.precomputed_dataset import _normalize_multiindex
+
+        factor_expressions, loaded_custom = self._load_factors()
+        custom_to_compute = custom_factors if custom_factors is not None else loaded_custom
+        frames = []
+        if factor_expressions:
+            qlib_features = self._load_qlib_factors(factor_expressions)
+            if qlib_features is not None and not qlib_features.empty:
+                frames.append(qlib_features)
+        if custom_to_compute:
+            computed = self._compute_custom_factors(custom_to_compute, skip_compute=skip_uncached)
+            if computed is not None and not computed.empty:
+                frames.append(computed)
+        from quantaalpha.backtest.external_data import load_external_data
+
+        external_df = load_external_data(self.config)
+        if external_df is not None and not external_df.empty:
+            frames.append(external_df)
+        if not frames:
+            raise ValueError("No candidate factor features available")
+
+        # Normalize all frames to a consistent (instrument, datetime) index order
+        normalized = [_normalize_multiindex(f, f"candidate_{i}") for i, f in enumerate(frames)]
+        return pd.concat(normalized, axis=1).loc[:, lambda df: ~df.columns.duplicated()]
+
     def _compute_label(self, label_expr: str) -> pd.DataFrame:
         """Compute label using Qlib (label requires look-ahead)."""
         from qlib.data import D
-        
+
         data_config = self.config['data']
-        
+
         logger.debug(f"  Label expr: {label_expr}")
-        
+
         stock_list = D.instruments(data_config['market'])
-        
+
         label_df = D.features(
             stock_list,
             [label_expr],
@@ -530,11 +416,11 @@ class BacktestRunner:
             end_time=data_config['end_time'],
             freq='day'
         )
-        
+
         label_df.columns = ['LABEL0']
-        
+
         logger.debug(f"  Label rows: {len(label_df)}")
-        
+
         return label_df
     
     def _load_qlib_factors(self, factor_expressions: Dict[str, str]) -> Optional[pd.DataFrame]:

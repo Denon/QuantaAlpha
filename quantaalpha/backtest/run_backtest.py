@@ -54,6 +54,8 @@ Examples:
     parser.add_argument('--dry-run', action='store_true', help='Load factors only, no backtest')
     parser.add_argument('--skip-uncached', action='store_true',
                         help='Skip uncached factors; use only cached factors for backtest')
+    parser.add_argument('--walk-forward', action='store_true',
+                        help='Run walk-forward factor selection backtest')
     
     args = parser.parse_args()
     
@@ -95,6 +97,18 @@ Examples:
                         print(f"  - {factor.get('factor_name', 'unknown')}")
                     if len(custom_factors) > 5:
                         print(f"  ... and {len(custom_factors) - 5} more")
+        elif args.walk_forward or runner.config.get("walk_forward", {}).get("enabled", False):
+            if args.factor_source:
+                runner.config["factor_source"]["type"] = args.factor_source
+            if args.factor_json:
+                runner.config["factor_source"]["custom"]["json_files"] = args.factor_json
+            if args.experiment:
+                runner.config["experiment"]["name"] = args.experiment
+
+            from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, load_walk_forward_config
+
+            wf_config = load_walk_forward_config(runner.config)
+            WalkForwardBacktestRunner(runner, wf_config).run(skip_uncached=args.skip_uncached)
         else:
             runner.run(
                 factor_source=args.factor_source,

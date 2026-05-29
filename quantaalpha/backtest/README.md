@@ -57,7 +57,45 @@ python backtest_v2/run_backtest.py -c backtest_v2/config.yaml \
     --factor-json /path/to/factor_data/quality/high_quality_2.json
 ```
 
-### 6. Dry Run 模式（仅加载因子）
+### 6. Walk-Forward Factor Selection (Walk-Forward回测)
+
+Walk-forward模式按时间顺序分割数据为多个fold,每个fold只使用过去数据选择因子,然后在未来窗口上评估,消除前瞻偏差。
+
+```bash
+python -m quantaalpha.backtest.run_backtest \
+  -c configs/backtest.yaml \
+  --factor-source combined \
+  --factor-json data/results/factor_library.json \
+  --walk-forward
+```
+
+**工作原理:**
+- 每个fold包含一个selection窗口(用于选择因子)和一个forward窗口(用于评估)
+- 因子选择严格限制在`[selection_start, selection_end]`内,仅使用该区间的IC/ICIR指标
+- `selection_lag_days`(默认2天)确保选择窗口结束日与决策日之间有缓冲,防止标签的前瞻引用泄漏
+- 每个fold独立训练LightGBM并在forward窗口上运行回测
+
+**输出文件** (保存在`experiment.output_dir`):
+- `walk_forward_folds.json` — 每个fold的详情、选择因子及指标
+- `walk_forward_selected_factors.csv` — 每个fold选中的因子列表
+- `walk_forward_summary.json` — 跨fold聚合指标(各数值指标的均值)
+
+**配置项:**
+```yaml
+walk_forward:
+  enabled: false  # 设为true通过配置启用
+  start_time: "2016-01-01"
+  end_time: "2025-12-26"
+  selection_window_months: 6
+  forward_window_months: 6
+  step_months: 6
+  selection_lag_days: 2
+  internal_valid_ratio: 0.2
+  top_k: 20
+  min_selection_days: 10
+```
+
+### 7. Dry Run 模式（仅加载因子）
 
 ```bash
 python backtest_v2/run_backtest.py -c backtest_v2/config.yaml \
