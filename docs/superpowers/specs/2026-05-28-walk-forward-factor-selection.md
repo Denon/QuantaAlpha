@@ -141,6 +141,11 @@ class WalkForwardFold:
 
 
 def generate_walk_forward_folds(config: WalkForwardConfig) -> list[WalkForwardFold]:
+    if config.step_months < config.forward_window_months:
+        raise ValueError(
+            f"step_months ({config.step_months}) must be >= forward_window_months "
+            f"({config.forward_window_months}) to avoid overlapping forward windows"
+        )
     start = pd.Timestamp(config.start_time)
     end = pd.Timestamp(config.end_time)
     selection_offset = pd.DateOffset(months=config.selection_window_months)
@@ -691,13 +696,17 @@ class WalkForwardBacktestRunner:
         self.config = config
 
     def run(self, skip_uncached: bool = False) -> WalkForwardResult:
+        import copy
+
         folds = generate_walk_forward_folds(self.config)
         features_df = self.runner.prepare_feature_frame(skip_uncached=skip_uncached)
         label_df = self.runner._compute_label(self.runner.config["dataset"]["label"])
         label_series = label_df["LABEL0"]
+        baseline_config = copy.deepcopy(self.runner.config)
 
         fold_results = []
         for fold in folds:
+            self.runner.config = copy.deepcopy(baseline_config)
             selection = select_top_factors(
                 features_df=features_df,
                 label_series=label_series,
@@ -845,6 +854,13 @@ Before the static `runner.run(...)` branch, dispatch:
 
 ```python
 if args.walk_forward or runner.config.get("walk_forward", {}).get("enabled", False):
+    if args.factor_source:
+        runner.config["factor_source"]["type"] = args.factor_source
+    if args.factor_json:
+        runner.config["factor_source"]["custom"]["json_files"] = args.factor_json
+    if args.experiment:
+        runner.config["experiment"]["name"] = args.experiment
+
     from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, load_walk_forward_config
 
     wf_config = load_walk_forward_config(runner.config)
@@ -921,7 +937,7 @@ Expected:
 - At least one fold runs.
 - `walk_forward_summary.json` is saved under the configured output directory.
 - Each fold output lists selected factors and forward-window metrics.
-- No fold selects factors using dates after its decision date.
+- No fold selects factors using dates after its selection_end (the actual leakage boundary, accounting for selection_lag_days).
 
 - [ ] **Step 4: Commit smoke-test fixes if needed**
 
