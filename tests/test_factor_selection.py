@@ -70,3 +70,27 @@ def test_window_slicing_respects_date_boundaries():
     assert len(result.selected) == 1
     score = result.selected[0]
     assert score.n_days <= 3
+
+
+def test_top_k_zero_selects_all_passing_factors():
+    label = _series("LABEL0", [1.0, 2.0, 3.0, 4.0])
+    features = pd.DataFrame(
+        {
+            "a": label + 0.001,
+            "b": label - 0.001,
+            "c": label * 1.01,
+        }
+    )
+
+    result = select_top_factors(
+        features_df=features,
+        label_series=label,
+        selection_start="2024-01-01",
+        selection_end="2024-01-04",
+        top_k=0,
+        min_days=2,
+    )
+
+    assert len(result.selected) == 3
+    assert result.rejected == {}
+

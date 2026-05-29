@@ -242,9 +242,8 @@ class WalkForwardBacktestRunner:
         for fr in result.folds:
             for name in fr.selected_factors:
                 selected_rows.append({"fold_id": fr.fold_id, "factor_name": name})
-        if selected_rows:
-            pd.DataFrame(selected_rows).to_csv(selected_path, index=False)
-            logger.info(f"Walk-forward selected factors saved: {selected_path}")
+        pd.DataFrame(selected_rows, columns=["fold_id", "factor_name"]).to_csv(selected_path, index=False)
+        logger.info(f"Walk-forward selected factors saved: {selected_path}")
 
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(result.aggregate_metrics, f, ensure_ascii=False, indent=2)
