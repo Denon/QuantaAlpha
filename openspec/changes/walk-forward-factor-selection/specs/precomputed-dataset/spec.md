@@ -32,9 +32,9 @@ The system SHALL fill NaN values with 0 and clip infinite values in the feature 
 
 ### Requirement: Cross-sectional rank normalization
 
-The system SHALL apply cross-sectional rank normalization to features: within each date, each feature's values SHALL be rank-transformed and scaled to [0, 1].
+The system SHALL apply cross-sectional rank normalization to features: within each date, each feature's values SHALL be rank-transformed to percentiles and centered around zero. This produces values in [-0.5, 0.5], matching the existing behavior being extracted from `BacktestRunner`.
 
-#### Scenario: Rank normalization produces bounded values
+#### Scenario: Rank normalization produces centered values
 
 - **WHEN** a feature column has values [10, 20, 30, 40] on a single date
-- **THEN** after normalization the values are in [0, 1] and preserve the original rank order
+- **THEN** after normalization the values are in [-0.5, 0.5] and preserve the original rank order

@@ -22,22 +22,22 @@
 
 ## 4. BacktestRunner Helpers for Feature Frames
 
-- [ ] 4.1 Write failing tests for `_apply_backtest_window` verifying segments and backtest range are updated without mutating original config (tests/test_walk_forward.py)
-- [ ] 4.2 Add `_apply_backtest_window`, `_create_dataset_from_feature_frame`, `run_feature_frame`, and `prepare_feature_frame` methods to `BacktestRunner`
+- [ ] 4.1 Write failing tests for `_apply_backtest_window` verifying segments and backtest range are updated (tests/test_walk_forward.py)
+- [ ] 4.2 Add `_apply_backtest_window`, `_create_dataset_from_feature_frame`, `run_feature_frame`, and `prepare_feature_frame` methods to `BacktestRunner`. Method `_apply_backtest_window` mutates `self.config` in place (the orchestrator is responsible for config isolation between folds, not this helper)
 - [ ] 4.3 Run runner tests and verify PASS
 - [ ] 4.4 Commit: `feat: add prepared feature frame backtest helpers`
 
 ## 5. WalkForwardBacktestRunner Orchestration
 
 - [ ] 5.1 Write failing test for full orchestration: mock runner, verify per-fold selection, fold-level backtest calls, and result aggregation (tests/test_walk_forward.py)
-- [ ] 5.2 Implement `FoldResult`, `WalkForwardResult`, `WalkForwardBacktestRunner` with `run()`, `_aggregate_metrics()`, and `_save_result()` in `walk_forward.py`
+- [ ] 5.2 Implement `FoldResult`, `WalkForwardResult`, `WalkForwardBacktestRunner` with `run()`, `_aggregate_metrics()`, and `_save_result()` in `walk_forward.py`. The orchestrator SHALL deep-copy the runner's original config before the fold loop and restore from the baseline before each fold's window is applied, ensuring config changes never leak between folds.
 - [ ] 5.3 Run orchestration tests and verify PASS
 - [ ] 5.4 Commit: `feat: add walk-forward backtest runner`
 
 ## 6. Config, CLI, and Documentation
 
 - [ ] 6.1 Add `walk_forward` block to `configs/backtest.yaml` with disabled-by-default and half-year defaults
-- [ ] 6.2 Add `--walk-forward` CLI flag to `run_backtest.py` and dispatch to `WalkForwardBacktestRunner` when enabled
+- [ ] 6.2 Add `--walk-forward` CLI flag to `run_backtest.py` and dispatch to `WalkForwardBacktestRunner` when enabled. Apply `--factor-source`, `--factor-json`, and `--experiment` overrides to the runner config identically to the static path before dispatching.
 - [ ] 6.3 Add wire tests for config loading with data-range fallbacks (tests/test_walk_forward.py)
 - [ ] 6.4 Document walk-forward usage in `quantaalpha/backtest/README.md` with example command and output file descriptions
 - [ ] 6.5 Run all backtest tests and verify PASS
@@ -47,5 +47,5 @@
 
 - [ ] 7.1 Run static backtest with `--dry-run` to confirm existing path is unchanged
 - [ ] 7.2 Run a short walk-forward smoke backtest with alpha158_20 and a bounded date range
-- [ ] 7.3 Verify output files exist (`walk_forward_folds.json`, `walk_forward_selected_factors.csv`, `walk_forward_summary.json`) and no factor selection uses dates after the decision date
+- [ ] 7.3 Verify output files exist (`walk_forward_folds.json`, `walk_forward_selected_factors.csv`, `walk_forward_summary.json`) and no factor selection uses data after `selection_end` (the actual leakage boundary, accounting for `selection_lag_days`)
 - [ ] 7.4 Fix any smoke-test issues and commit if needed: `fix: stabilize walk-forward smoke backtest`

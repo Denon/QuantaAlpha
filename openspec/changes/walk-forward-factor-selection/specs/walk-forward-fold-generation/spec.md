@@ -6,6 +6,8 @@ The system SHALL generate a list of non-overlapping walk-forward folds from a `W
 
 The selection window end date SHALL be `decision_date - selection_lag_days`. The forward window start SHALL equal the decision date. The internal validation split SHALL be the last `internal_valid_ratio` fraction of the selection window.
 
+The system SHALL raise a `ValueError` when `step_months < forward_window_months`, because step values smaller than the forward window produce overlapping forward windows and double-count out-of-sample periods in aggregate metrics.
+
 #### Scenario: Half-year folds over two years
 
 - **WHEN** config has start_time="2015-01-01", end_time="2016-12-31", selection_window_months=6, forward_window_months=6, step_months=6, selection_lag_days=2
@@ -25,6 +27,11 @@ The selection window end date SHALL be `decision_date - selection_lag_days`. The
 
 - **WHEN** selection_lag_days exceeds the selection window length
 - **THEN** a ValueError is raised
+
+#### Scenario: Step smaller than forward window raises error
+
+- **WHEN** step_months=3 and forward_window_months=6
+- **THEN** a ValueError is raised with a message indicating step_months must be >= forward_window_months
 
 ### Requirement: Config loading with data-range defaults
 
