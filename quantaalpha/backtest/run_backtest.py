@@ -56,7 +56,9 @@ Examples:
                         help='Skip uncached factors; use only cached factors for backtest')
     parser.add_argument('--walk-forward', action='store_true',
                         help='Run walk-forward factor selection backtest')
-    
+    parser.add_argument('--regime', type=str, default=None,
+                        help='Filter walk-forward folds by regime (e.g. volatile_bear). Only active with --walk-forward.')
+
     args = parser.parse_args()
     
     if args.verbose:
@@ -104,12 +106,16 @@ Examples:
                 runner.config["factor_source"]["custom"]["json_files"] = args.factor_json
             if args.experiment:
                 runner.config["experiment"]["name"] = args.experiment
+            if args.regime:
+                runner.config.setdefault("walk_forward", {})["regime_filter"] = args.regime
 
             from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, load_walk_forward_config
 
             wf_config = load_walk_forward_config(runner.config)
             WalkForwardBacktestRunner(runner, wf_config).run(skip_uncached=args.skip_uncached)
         else:
+            if args.regime:
+                logger.warning("--regime is only active with --walk-forward; flag ignored for static backtest.")
             runner.run(
                 factor_source=args.factor_source,
                 factor_json=args.factor_json,

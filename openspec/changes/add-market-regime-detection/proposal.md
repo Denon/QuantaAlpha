@@ -6,11 +6,13 @@ Walk-forward factor selection currently evaluates factors purely on IC/ICIR with
 
 - New `regime.py` module with pluggable strategy interface for market regime detection
 - Default implementation: volatility bucketing + direction (bull/bear) →二维 regime labels
-- `WalkForwardConfig` gains 3 new optional fields: `regime_method`, `regime_vol_window`, `regime_n_regimes`
+- `WalkForwardConfig` gains 4 new optional fields: `regime_method`, `regime_vol_window`, `regime_n_regimes`, `regime_filter`
 - `FoldResult` gains `regime` field (string label per fold)
 - New output file `walk_forward_regime_summary.json` with per-regime factor performance aggregation
 - `walk_forward_selected_factors.csv` gains `regime` column
 - `walk_forward_folds.json` includes `regime` field per fold
+- `--regime` CLI flag to filter walk-forward backtest to only folds matching a specific regime
+- `build_regime_map.py` tool to produce reusable monthly regime classification CSV
 
 ## Capabilities
 
