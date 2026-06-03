@@ -98,6 +98,38 @@ def test_load_walk_forward_config_disabled_by_default():
     assert cfg.enabled is False
 
 
+def test_load_walk_forward_config_with_regime_fields():
+    config = {
+        "data": {"start_time": "2016-01-01", "end_time": "2025-12-26"},
+        "walk_forward": {
+            "enabled": True,
+            "top_k": 10,
+            "regime_method": "volatility_direction",
+            "regime_vol_window": 90,
+            "regime_n_regimes": 3,
+        },
+    }
+
+    cfg = load_walk_forward_config(config)
+
+    assert cfg.regime_method == "volatility_direction"
+    assert cfg.regime_vol_window == 90
+    assert cfg.regime_n_regimes == 3
+
+
+def test_load_walk_forward_config_without_regime_fields_defaults_disabled():
+    config = {
+        "data": {"start_time": "2016-01-01", "end_time": "2025-12-26"},
+        "walk_forward": {"enabled": True, "top_k": 5},
+    }
+
+    cfg = load_walk_forward_config(config)
+
+    assert cfg.regime_method == ""
+    assert cfg.regime_vol_window == 60
+    assert cfg.regime_n_regimes == 2
+
+
 def test_forward_window_capped_at_global_end_time():
     cfg = WalkForwardConfig(
         enabled=True,
@@ -363,3 +395,409 @@ def test_walk_forward_runner_restores_config_between_folds(tmp_path):
     assert len(set(backtest_starts)) == len(backtest_starts), (
         f"Expected each fold to have a unique backtest start, got: {backtest_starts}"
     )
+
+
+# --- Regime integration tests ---
+
+
+def test_fold_result_regime_populated_when_regime_enabled(tmp_path):
+    """FoldResult.regime should be a string when regime_method is set."""
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=500, freq="B")
+    instruments = ["A", "B", "C"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01, "f2": label - 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+        "backtest": {"backtest": {"benchmark": "SH000300"}},
+        "data": {"start_time": "2015-01-01", "end_time": "2015-12-31"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.02}
+
+    def apply_window(train, valid, test):
+        pass
+
+    runner._apply_backtest_window = apply_window
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-12-31",
+        selection_window_months=6,
+        forward_window_months=6,
+        step_months=6,
+        selection_lag_days=2,
+        internal_valid_ratio=0.2,
+        top_k=2,
+        min_selection_days=2,
+        regime_method="volatility_direction",
+        regime_vol_window=60,
+        regime_n_regimes=2,
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+
+    # Inject mock benchmark prices (declining → bear, decent vol → volatile_bear)
+    bm_dates = pd.date_range("2015-01-01", periods=260, freq="B")
+    bm_prices = pd.Series(np.linspace(100, 50, len(bm_dates)), index=bm_dates, name="close")
+    wf._fetch_benchmark_prices = lambda: bm_prices
+
+    result = wf.run()
+
+    assert len(result.folds) >= 1
+    for fr in result.folds:
+        assert fr.regime is not None, f"Expected regime to be populated for fold {fr.fold_id}"
+        assert isinstance(fr.regime, str)
+        assert "bear" in fr.regime  # declining prices → bear direction
+
+
+def test_fold_result_regime_none_when_regime_disabled(tmp_path):
+    """FoldResult.regime should be None when regime_method is empty."""
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=260, freq="B")
+    instruments = ["A", "B", "C"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.02}
+    runner._apply_backtest_window = lambda train, valid, test: None
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-12-31",
+        selection_window_months=6,
+        forward_window_months=6,
+        step_months=6,
+        selection_lag_days=2,
+        internal_valid_ratio=0.2,
+        top_k=1,
+        min_selection_days=2,
+        # regime_method left as default ""
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+    result = wf.run()
+
+    assert len(result.folds) >= 1
+    for fr in result.folds:
+        assert fr.regime is None, f"Expected regime to be None when disabled, got {fr.regime}"
+
+
+# --- Regime output tests ---
+
+
+def test_regime_summary_json_written_when_enabled(tmp_path):
+    """walk_forward_regime_summary.json should exist with correct structure when regime enabled."""
+    import json as _json
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=260, freq="B")
+    instruments = ["A", "B", "C"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01, "f2": label - 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+        "backtest": {"backtest": {"benchmark": "SH000300"}},
+        "data": {"start_time": "2015-01-01", "end_time": "2015-06-30"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.03, "Rank ICIR": 0.5, "annualized_return": 0.1}
+    runner._apply_backtest_window = lambda train, valid, test: None
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-06-30",
+        selection_window_months=3,
+        forward_window_months=3,
+        step_months=3,
+        selection_lag_days=2,
+        internal_valid_ratio=0.2,
+        top_k=2,
+        min_selection_days=2,
+        regime_method="volatility_direction",
+        regime_vol_window=60,
+        regime_n_regimes=2,
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+
+    # Inject mock benchmark prices
+    bm_dates = pd.date_range("2015-01-01", periods=130, freq="B")
+    bm_prices = pd.Series(np.linspace(100, 80, len(bm_dates)), index=bm_dates, name="close")
+    wf._fetch_benchmark_prices = lambda: bm_prices
+
+    result = wf.run()
+
+    # Check regime summary file exists with correct structure
+    regime_path = tmp_path / "walk_forward_regime_summary.json"
+    assert regime_path.exists(), f"Expected {regime_path} to exist when regime enabled"
+
+    summary = _json.loads(regime_path.read_text())
+    assert len(summary) >= 1, "Expected at least one regime in summary"
+
+    for regime_label, info in summary.items():
+        assert isinstance(regime_label, str)
+        assert "n_folds" in info
+        assert "avg_mean_ic" in info
+        assert "avg_mean_rank_icir" in info
+        assert "top_factors" in info
+        assert isinstance(info["n_folds"], int)
+        assert info["n_folds"] >= 1
+
+    # Also verify regime field in folds JSON
+    folds_path = tmp_path / "walk_forward_folds.json"
+    folds_data = _json.loads(folds_path.read_text())
+    for fold_entry in folds_data:
+        assert "regime" in fold_entry
+        assert fold_entry["regime"] is not None
+
+    # Verify regime column in CSV
+    import pandas as _pd
+    csv_path = tmp_path / "walk_forward_selected_factors.csv"
+    df = _pd.read_csv(csv_path)
+    assert "regime" in df.columns
+    # All rows should have a regime label (non-empty when enabled)
+    assert (df["regime"] != "").all()
+
+
+def test_regime_summary_not_written_when_disabled(tmp_path):
+    """walk_forward_regime_summary.json should NOT exist when regime disabled."""
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=260, freq="B")
+    instruments = ["A", "B"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.02}
+    runner._apply_backtest_window = lambda train, valid, test: None
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-06-30",
+        selection_window_months=3,
+        forward_window_months=3,
+        step_months=3,
+        selection_lag_days=2,
+        top_k=1,
+        min_selection_days=2,
+        # regime_method left as default ""
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+    wf.run()
+
+    regime_path = tmp_path / "walk_forward_regime_summary.json"
+    assert not regime_path.exists(), (
+        f"Expected {regime_path} to NOT exist when regime disabled"
+    )
+
+
+# --- Regime filtering tests ---
+
+
+def test_regime_filter_skips_non_matching_folds(tmp_path):
+    """Folds with regime != regime_filter should be skipped."""
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=500, freq="B")
+    instruments = ["A", "B"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+        "backtest": {"backtest": {"benchmark": "SH000300"}},
+        "data": {"start_time": "2015-01-01", "end_time": "2016-12-31"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.02}
+    runner._apply_backtest_window = lambda train, valid, test: None
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2016-12-31",
+        selection_window_months=6,
+        forward_window_months=6,
+        step_months=6,
+        selection_lag_days=2,
+        internal_valid_ratio=0.2,
+        top_k=1,
+        min_selection_days=2,
+        regime_method="volatility_direction",
+        regime_vol_window=60,
+        regime_n_regimes=2,
+        regime_filter="volatile_bear",
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+
+    # Inject benchmark prices: monotonic decline → bear direction
+    bm_dates = pd.date_range("2015-01-01", periods=500, freq="B")
+    bm_prices = pd.Series(np.linspace(100, 50, len(bm_dates)), index=bm_dates, name="close")
+    wf._fetch_benchmark_prices = lambda: bm_prices
+
+    result = wf.run()
+
+    # All processed folds should be volatile_bear (declining prices → bear)
+    for fr in result.folds:
+        assert fr.regime is not None
+        assert "bear" in fr.regime, f"Expected bear direction, got {fr.regime}"
+    # At least some folds should have been processed
+    assert len(result.folds) >= 1
+
+
+def test_regime_filter_all_folds_skipped_raises_value_error(tmp_path):
+    """When no fold matches the filter, ValueError is raised."""
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=500, freq="B")
+    instruments = ["A", "B"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+        "backtest": {"backtest": {"benchmark": "SH000300"}},
+        "data": {"start_time": "2015-01-01", "end_time": "2015-12-31"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.02}
+    runner._apply_backtest_window = lambda train, valid, test: None
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2015-12-31",
+        selection_window_months=6,
+        forward_window_months=6,
+        step_months=6,
+        selection_lag_days=2,
+        internal_valid_ratio=0.2,
+        top_k=1,
+        min_selection_days=2,
+        regime_method="volatility_direction",
+        regime_vol_window=60,
+        regime_n_regimes=2,
+        regime_filter="calm_bull",  # declining prices → bear, so none will match
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+
+    # Inject benchmark prices: monotonic decline → bear direction only
+    bm_dates = pd.date_range("2015-01-01", periods=260, freq="B")
+    bm_prices = pd.Series(np.linspace(100, 50, len(bm_dates)), index=bm_dates, name="close")
+    wf._fetch_benchmark_prices = lambda: bm_prices
+
+    try:
+        wf.run()
+        assert False, "Expected ValueError when no folds match regime_filter"
+    except ValueError as e:
+        assert "regime_filter" in str(e)
+        assert "calm_bull" in str(e)
+
+
+def test_regime_filter_empty_default_processes_all_folds(tmp_path):
+    """When regime_filter is empty (default), all folds should be processed."""
+    from unittest.mock import MagicMock
+
+    from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
+
+    dates = pd.date_range("2015-01-01", periods=500, freq="B")
+    instruments = ["A", "B"]
+    idx = pd.MultiIndex.from_product([dates, instruments], names=["datetime", "instrument"])
+    label = pd.Series(np.random.randn(len(idx)), index=idx, name="LABEL0")
+    features = pd.DataFrame({"f1": label + 0.01}, index=idx)
+
+    runner = MagicMock()
+    runner.config = {
+        "experiment": {"name": "wf", "recorder": "rec", "output_dir": str(tmp_path)},
+        "dataset": {"label": "LABEL0"},
+        "backtest": {"backtest": {"benchmark": "SH000300"}},
+        "data": {"start_time": "2015-01-01", "end_time": "2016-12-31"},
+    }
+    runner.prepare_feature_frame.return_value = features
+    runner._compute_label.return_value = pd.DataFrame({"LABEL0": label})
+    runner.run_feature_frame.return_value = {"Rank IC": 0.02}
+    runner._apply_backtest_window = lambda train, valid, test: None
+
+    cfg = WalkForwardConfig(
+        enabled=True,
+        start_time="2015-01-01",
+        end_time="2016-12-31",
+        selection_window_months=6,
+        forward_window_months=6,
+        step_months=6,
+        selection_lag_days=2,
+        internal_valid_ratio=0.2,
+        top_k=1,
+        min_selection_days=2,
+        regime_method="volatility_direction",
+        regime_vol_window=60,
+        regime_n_regimes=2,
+        # regime_filter left as default ""
+    )
+
+    wf = WalkForwardBacktestRunner(runner, cfg)
+
+    bm_dates = pd.date_range("2015-01-01", periods=500, freq="B")
+    bm_prices = pd.Series(np.linspace(100, 50, len(bm_dates)), index=bm_dates, name="close")
+    wf._fetch_benchmark_prices = lambda: bm_prices
+
+    result = wf.run()
+
+    # With ~2.5 years at 6-month steps, should get multiple folds
+    assert len(result.folds) >= 2, f"Expected >=2 folds with no filter, got {len(result.folds)}"

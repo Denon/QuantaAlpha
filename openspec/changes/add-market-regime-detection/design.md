@@ -84,6 +84,16 @@ The existing architecture has:
 
 **Rationale:** Regime awareness is for analysis and downstream decision-making, not for altering the IC computation. The user selects factors based on IC, then uses regime to understand context and filter results.
 
+### 7. Fold-level regime filtering via `regime_filter` config
+
+**Choice:** Add `regime_filter: str = ""` to `WalkForwardConfig` and `--regime` CLI flag. When non-empty, folds whose `dominant_regime()` does not match are skipped. The fold's regime is computed identically — `regime_filter` only gates whether the fold proceeds to factor selection and backtest.
+
+**Alternatives considered:**
+- Monthly filtering within a fold: Would require restructuring `select_top_factors()` to accept date masks, breaking the design decision to keep factor selection unchanged.
+- Post-hoc filtering of output files: Simpler but wastes compute on unwanted folds.
+
+**Rationale:** Fold-level filtering is a single `if` statement in the runner loop, reuses the existing `dominant_regime()` call, and does not touch factor selection logic. The monthly regime map (`data/regime/monthly_regime_map.csv`) remains available as a standalone research tool for finer-grained analysis.
+
 ## Risks / Trade-offs
 
 - **Regime stability** → Mitigated by using large `vol_window` (default 60 days) and majority vote. User can tune via config.

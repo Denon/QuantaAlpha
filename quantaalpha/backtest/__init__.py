@@ -4,8 +4,16 @@ Backtest V2: Qlib official factor sets (alpha158/alpha360), custom factor JSON, 
 
 from .factor_loader import FactorLoader
 from .factor_calculator import FactorCalculator, QlibDataProvider
+from .regime import MarketRegimeDetector, RegimeStrategy
 from .runner import BacktestRunner
 
 __version__ = "2.0.0"
-__all__ = ["FactorLoader", "FactorCalculator", "QlibDataProvider", "BacktestRunner"]
+__all__ = [
+    "FactorLoader",
+    "FactorCalculator",
+    "QlibDataProvider",
+    "MarketRegimeDetector",
+    "RegimeStrategy",
+    "BacktestRunner",
+]
 
