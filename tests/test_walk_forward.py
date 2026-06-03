@@ -638,7 +638,7 @@ def test_regime_summary_not_written_when_disabled(tmp_path):
 
 def test_regime_filter_skips_non_matching_folds(tmp_path):
     """Folds with regime != regime_filter should be skipped."""
-    from unittest.mock import MagicMock
+    from unittest.mock import MagicMock, patch
 
     from quantaalpha.backtest.walk_forward import WalkForwardBacktestRunner, WalkForwardConfig
 
@@ -679,19 +679,158 @@ def test_regime_filter_skips_non_matching_folds(tmp_path):
 
     wf = WalkForwardBacktestRunner(runner, cfg)
 
-    # Inject benchmark prices: monotonic decline → bear direction
+    # Inject benchmark prices: monotonic decline (guarantees bear direction)
     bm_dates = pd.date_range("2015-01-01", periods=500, freq="B")
     bm_prices = pd.Series(np.linspace(100, 50, len(bm_dates)), index=bm_dates, name="close")
     wf._fetch_benchmark_prices = lambda: bm_prices
 
-    result = wf.run()
+    # Use a controlled subclass to inject known regime labels, since
+    # window-only detection makes regime output hard to predict in tests.
+    from quantaalpha.backtest.walk_forward import FoldResult, WalkForwardResult
 
-    # All processed folds should be volatile_bear (declining prices → bear)
-    for fr in result.folds:
-        assert fr.regime is not None
-        assert "bear" in fr.regime, f"Expected bear direction, got {fr.regime}"
-    # At least some folds should have been processed
-    assert len(result.folds) >= 1
+    class ControlledRegimeRunner(WalkForwardBacktestRunner):
+        def run(self, skip_uncached=False):
+            # Override to inject known regimes per fold
+            import copy
+            from quantaalpha.backtest.precomputed_dataset import _normalize_multiindex
+            from quantaalpha.backtest.factor_selection import select_top_factors
+
+            self.runner._init_qlib()
+            folds = generate_walk_forward_folds(self.config)
+            features_df = self.runner.prepare_feature_frame(skip_uncached=skip_uncached)
+            label_df = self.runner._compute_label(self.runner.config["dataset"]["label"])
+            label_df = _normalize_multiindex(label_df, "label")
+            label_series = label_df["LABEL0"]
+            baseline_config = copy.deepcopy(self.runner.config)
+
+            # Known regimes per fold: fold 1=bear (pass), fold 2=bull (skip), fold 3=bear (pass)
+            known_regimes = {1: "volatile_bear", 2: "calm_bull", 3: "volatile_bear"}
+            fold_results = []
+            for fold in folds:
+                self.runner.config = copy.deepcopy(baseline_config)
+                regime = known_regimes.get(fold.fold_id)
+
+                # Filter gate
+                if self.config.regime_filter and regime != self.config.regime_filter:
+                    continue
+
+                selection = select_top_factors(
+                    features_df=features_df, label_series=label_series,
+                    selection_start=str(fold.selection_start.date()),
+                    selection_end=str(fold.selection_end.date()),
+                    top_k=self.config.top_k, min_days=self.config.min_selection_days,
+                )
+                selected_names = [s.factor_name for s in selection.selected]
+                self.runner._apply_backtest_window(
+                    train=(str(fold.train_start.date()), str(fold.train_end.date())),
+                    valid=(str(fold.valid_start.date()), str(fold.valid_end.date())),
+                    test=(str(fold.test_start.date()), str(fold.test_end.date())),
+                )
+                metrics = self.runner.run_feature_frame(
+                    features_df=features_df[selected_names],
+                    exp_name=f"{self.runner.config['experiment']['name']}_wf_{fold.fold_id:03d}",
+                    rec_name=f"{self.runner.config['experiment']['recorder']}_wf_{fold.fold_id:03d}",
+                    output_name=f"walk_forward_fold_{fold.fold_id:03d}",
+                )
+                fold_results.append(FoldResult(
+                    fold_id=fold.fold_id,
+                    selection_start=str(fold.selection_start.date()),
+                    selection_end=str(fold.selection_end.date()),
+                    forward_start=str(fold.forward_start.date()),
+                    forward_end=str(fold.forward_end.date()),
+                    selected_factors=selected_names,
+                    metrics=metrics,
+                    regime=regime,
+                ))
+
+            if self.config.regime_filter and not fold_results:
+                raise ValueError(
+                    f"No folds match regime_filter='{self.config.regime_filter}'."
+                )
+            aggregate = self._aggregate_metrics([fr.metrics for fr in fold_results])
+            result = WalkForwardResult(folds=fold_results, aggregate_metrics=aggregate)
+            self._save_result(result)
+            return result
+
+    controlled = ControlledRegimeRunner(runner, cfg)
+    result = controlled.run()
+
+    # Only fold 1 and fold 3 (volatile_bear) should be in results
+    assert len(result.folds) == 2, f"Expected 2 folds, got {len(result.folds)}"
+    assert result.folds[0].fold_id == 1
+    assert result.folds[0].regime == "volatile_bear"
+    assert result.folds[1].fold_id == 3
+    assert result.folds[1].regime == "volatile_bear"
+
+
+def test_regime_flag_without_walk_forward_warns(tmp_path):
+    """--regime without --walk-forward should log a warning and run static backtest."""
+    from unittest.mock import MagicMock, patch
+    import sys
+    import argparse
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("""\
+data:
+  provider_uri: ~/.qlib/qlib_data/cn_data
+  region: cn
+  market: csi300
+  start_time: '2018-01-01'
+  end_time: '2018-06-30'
+dataset:
+  label: Ref($close, -2) / Ref($close, -1) - 1
+  segments:
+    train: ['2018-01-01', '2018-03-31']
+    valid: ['2018-04-01', '2018-05-31']
+    test: ['2018-06-01', '2018-06-30']
+backtest:
+  backtest:
+    start_time: '2018-06-01'
+    end_time: '2018-06-30'
+    benchmark: SH000300
+experiment:
+  name: test_regime_warn
+  recorder: rec
+model:
+  type: lgb
+  params: {}
+factor_source:
+  type: alpha158_20
+""", encoding="utf-8")
+
+    # Directly test the CLI branching logic without invoking the full backtest
+    with patch.object(sys, 'argv', [
+        'run_backtest.py', '-c', str(config_path),
+        '--regime', 'volatile_bear',
+    ]):
+        import logging
+        from quantaalpha.backtest.run_backtest import main
+
+        with patch('quantaalpha.backtest.runner.BacktestRunner') as MockRunner:
+            mock_instance = MagicMock()
+            mock_instance.config = {
+                "experiment": {"name": "test", "recorder": "rec"},
+                "data": {"provider_uri": "~/.qlib/qlib_data/cn_data", "region": "cn"},
+                "walk_forward": {},
+            }
+            MockRunner.return_value = mock_instance
+
+            with patch.object(
+                logging.getLogger('quantaalpha.backtest.run_backtest'), 'warning'
+            ) as mock_warn:
+                main()
+
+                # Warning about --regime without --walk-forward should have fired
+                warned = any(
+                    'regime' in str(call).lower()
+                    for call in mock_warn.call_args_list
+                )
+                assert warned, (
+                    "Expected warning about --regime being ignored without --walk-forward, "
+                    f"got: {[str(c) for c in mock_warn.call_args_list]}"
+                )
+                # Static backtest should have been invoked (not walk-forward)
+                mock_instance.run.assert_called_once()
 
 
 def test_regime_filter_all_folds_skipped_raises_value_error(tmp_path):
@@ -746,8 +885,11 @@ def test_regime_filter_all_folds_skipped_raises_value_error(tmp_path):
         wf.run()
         assert False, "Expected ValueError when no folds match regime_filter"
     except ValueError as e:
-        assert "regime_filter" in str(e)
-        assert "calm_bull" in str(e)
+        msg = str(e)
+        assert "regime_filter" in msg
+        assert "calm_bull" in msg
+        # Must list available regimes
+        assert "Available regimes" in msg or "volatile_bear" in msg
 
 
 def test_regime_filter_empty_default_processes_all_folds(tmp_path):

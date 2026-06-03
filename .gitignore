@@ -68,6 +68,7 @@ pip-delete-this-directory.txt
 
 # ---- Data & Results (local experiment outputs) ----
 data/
+!data/regime/
 mlruns/
 reports/
 backtest_v2_results/

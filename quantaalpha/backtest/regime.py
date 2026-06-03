@@ -182,6 +182,10 @@ class MarketRegimeDetector:
     ) -> str | None:
         """Return the majority-vote regime within a date window.
 
+        Prices are pre-sliced to the requested window before detection
+        so that volatility percentiles and rolling statistics are computed
+        from the window's own data — no lookahead or outside-window context.
+
         Parameters
         ----------
         prices : pd.Series
@@ -201,13 +205,13 @@ class MarketRegimeDetector:
             Dominant regime label, or ``None`` if no valid labels exist.
             Ties are broken by chronological first appearance.
         """
-        regime_series = self.detect(prices, vol_window, n_regimes)
-
-        # Restrict to requested window
+        # Pre-slice prices so detect() uses only this window's data
         if start is not None:
-            regime_series = regime_series[regime_series.index >= pd.Timestamp(start)]
+            prices = prices[prices.index >= pd.Timestamp(start)]
         if end is not None:
-            regime_series = regime_series[regime_series.index <= pd.Timestamp(end)]
+            prices = prices[prices.index <= pd.Timestamp(end)]
+
+        regime_series = self.detect(prices, vol_window, n_regimes)
 
         valid = regime_series.dropna()
         if len(valid) == 0:

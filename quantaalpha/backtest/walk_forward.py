@@ -185,19 +185,26 @@ class WalkForwardBacktestRunner:
 
         fold_results: list[FoldResult] = []
         skipped_folds: list[int] = []
+        seen_regimes: set[str] = set()
         for fold in folds:
             self.runner.config = copy.deepcopy(baseline_config)
 
             # --- Detect regime for this fold's selection window ---
+            # Slice prices to the selection window so volatility percentiles and
+            # regime labels are computed from this fold's data only (no lookahead).
             regime: str | None = None
             if detector is not None and benchmark_prices is not None:
-                regime = detector.dominant_regime(
-                    prices=benchmark_prices,
-                    vol_window=self.config.regime_vol_window,
-                    n_regimes=self.config.regime_n_regimes,
-                    start=str(fold.selection_start.date()),
-                    end=str(fold.selection_end.date()),
-                )
+                sel_mask = (benchmark_prices.index >= fold.selection_start) & \
+                           (benchmark_prices.index <= fold.selection_end)
+                window_prices = benchmark_prices[sel_mask]
+                if len(window_prices) >= self.config.regime_vol_window:
+                    regime = detector.dominant_regime(
+                        prices=window_prices,
+                        vol_window=self.config.regime_vol_window,
+                        n_regimes=self.config.regime_n_regimes,
+                    )
+            if regime is not None:
+                seen_regimes.add(regime)
 
             # --- Regime filter gate ---
             if self.config.regime_filter:
@@ -253,9 +260,11 @@ class WalkForwardBacktestRunner:
             )
 
         if self.config.regime_filter and not fold_results:
+            available = sorted(seen_regimes) if seen_regimes else ["(none detected)"]
             raise ValueError(
                 f"No folds match regime_filter='{self.config.regime_filter}'. "
                 f"All {len(skipped_folds)} fold(s) were skipped. "
+                f"Available regimes in this date range: {available}. "
                 f"Check your date range or try a different regime."
             )
 
