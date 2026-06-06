@@ -183,7 +183,7 @@ def build_regime_table(exp, regime_map) -> str | None:
                 continue
 
         if not factor_data:
-            logger.info("No factor workspace result files found; cannot compute per-regime IC")
+            logger.warning("No factor workspace result files found; cannot compute per-regime IC")
             return None
 
         # Determine date range from factor data
@@ -281,7 +281,7 @@ def build_regime_table(exp, regime_map) -> str | None:
                 continue
 
         if not regime_metrics:
-            logger.info("No regime metrics computed (no overlap between IC dates and regime map)")
+            logger.warning("No regime metrics computed (no overlap between IC dates and regime map)")
             return None
 
         # For each regime, compute mean IC across all factors (simple average)
@@ -505,7 +505,14 @@ class AlphaAgentQlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Fee
         regime_map = getattr(self, 'regime_map', None)
         regime_table = None
         if regime_map is not None:
+            logger.info(f"Regime map available ({len(regime_map)} months), building regime table...")
             regime_table = build_regime_table(exp, regime_map)
+            if regime_table is not None:
+                logger.info(f"Regime table built successfully ({len(regime_table)} chars)")
+            else:
+                logger.warning("Regime table build returned None — check preceding warnings for details")
+        else:
+            logger.debug("No regime_map on summarizer; skipping regime-aware feedback")
 
         # Generate the system prompt
         sys_prompt = (
