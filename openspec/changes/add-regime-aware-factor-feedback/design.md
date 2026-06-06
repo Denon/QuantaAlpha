@@ -42,14 +42,21 @@ The change enriches `process_results()` to compute per-regime metrics by slicing
 
 **Rationale:** Load once, reuse across all feedback iterations. Explicit passing makes the dependency visible and testable.
 
-### 3. Slicing by time ranges, not per-day labeling
+### 3. Slicing by time ranges with union-of-intervals per regime
 
-**Choice:** For each regime label in the map (e.g., `calm_bull`), call `filter_dates_by_regime(regime_map, label, start, end)` to get month time intervals. Filter the backtest result to those intervals. Compute metrics on the filtered subset.
+**Choice:** For each unique regime label in the map (e.g., `calm_bull`), call `filter_dates_by_regime(regime_map, label, start, end)` to get ALL month time intervals for that label. Take the union of these (potentially non-contiguous) intervals, filter the backtest result to dates falling in any of them, sort chronologically, and compute a single set of aggregate metrics on the combined subset.
+
+Metrics are computed on the stitched subset:
+- **IC**: Pearson correlation — cross-sectional, so temporal contiguity doesn't matter
+- **Annualized return**: Compound all daily returns in the subset, annualize: `(∏(1+r))^(252/n) - 1`
+- **IR**: Annualized return / annualized std dev of returns on the subset
+- **Max drawdown**: Computed on the chronologically-sorted daily return series — this treats non-contiguous intervals as a stitched equity curve. Interpretation: "if I only traded during `calm_bull` periods, what was my worst peak-to-trough?"
 
 **Alternatives considered:**
-- Per-day label join: Slower (row-by-row merge), conceptually treats each day as independent when regime periods are contiguous.
+- Per-day label join: Slower (row-by-row merge), conceptually treats each day as independent when regime periods are months.
+- Per-interval metrics then average: Would require weighting by interval length and lose max drawdown semantics (stitched-series DD ≠ average of per-interval DDs).
 
-**Rationale:** Time-range slicing respects the contiguous nature of regime periods, is computationally cheaper, and directly uses the existing `filter_dates_by_regime()` API.
+**Rationale:** The union-of-intervals approach gives each regime a single set of easily-interpretable metrics. The stitched max drawdown is standard in regime analysis — it answers "what was the worst I'd have done if I only deployed this factor during this regime."
 
 ### 4. Side-by-side table in prompt template
 
