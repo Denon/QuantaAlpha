@@ -258,6 +258,12 @@ def build_regime_table(exp, regime_map) -> str | None:
         # Compute daily IC for each factor
         total_ic_dates = 0
         total_matched = 0
+
+        # Ensure label series has (datetime, instrument) index order
+        if (isinstance(label_series.index, pd.MultiIndex)
+                and list(label_series.index.names) == ['instrument', 'datetime']):
+            label_series = label_series.swaplevel().sort_index()
+
         # Get CSI300 instruments for filtering factor data
         csi300_instruments = set(D.list_instruments(D.instruments('csi300'), as_list=True))
         for fname, fseries in factor_data.items():
