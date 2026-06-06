@@ -16,7 +16,15 @@ The system SHALL support an optional `regime` section in the experiment YAML con
 - **THEN** the system SHALL log a warning and disable the feature (regime map loads as `None`)
 
 ### Requirement: Per-regime metric computation
-`process_results()` SHALL accept an optional `regime_map` parameter (default `None`). When a regime map is provided, the function SHALL compute the same four metrics (IC, annualized return, information ratio, max drawdown) separately for each regime present in the map by filtering the backtest result to the date ranges of each regime.
+`process_results()` SHALL accept an optional `regime_map` parameter (default `None`). When a regime map is provided, the function SHALL compute the same four metrics (IC, annualized return, information ratio, max drawdown) separately for each regime present in the map. For each regime, the function SHALL take the union of all month intervals belonging to that regime label, filter the backtest result to those dates (chronologically sorted), and compute metrics on the resulting subset. Metrics SHALL be computed as follows on each regime's date subset:
+- **IC**: Pearson correlation between predicted and actual returns across all dates in the subset (cross-sectional, no temporal ordering required)
+- **Annualized return**: Compound all daily returns within the subset, then annualize: `(∏(1 + r))^(252/n) - 1`
+- **Information ratio**: Annualized return divided by annualized standard deviation of daily returns on the subset
+- **Max drawdown**: Peak-to-trough drawdown on the chronologically-sorted daily return series, treating non-contiguous intervals as a stitched equity curve (i.e., drawdown is computed as if those dates were the only trading days)
+
+#### Scenario: Per-regime metrics from multiple non-contiguous intervals
+- **WHEN** `process_results()` is called with a regime map where `calm_bull` has three non-contiguous monthly intervals (Jan 2018, Apr 2018, Jul 2018) and the backtest result spans Jan–Dec 2018
+- **THEN** the function SHALL union all three intervals into a single `calm_bull` date mask, filter the result to those dates ordered chronologically, and compute a single set of aggregate metrics (IC, annualized return, IR, max drawdown) from that combined subset
 
 #### Scenario: Per-regime metrics computed
 - **WHEN** `process_results()` is called with a regime map containing `calm_bull` and `volatile_bear` regimes, and the backtest result spans 500 trading days
