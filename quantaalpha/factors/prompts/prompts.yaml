@@ -262,9 +262,29 @@ factor_feedback_generation:
         **Note: This factor was not implemented in the current experiment. Only the hypothesis for implemented factors can be verified.**
         {% endif %}
     {% endfor %}
-    Combined Results: 
+    Combined Results:
     {{ combined_result }}
-    
+    {% if regime_table %}
+    **Regime-Aware Performance Analysis:**
+
+    The factor's performance has been broken down by market regime. Each regime represents a distinct market environment:
+    - `calm_bull`: low volatility + rising prices
+    - `calm_bear`: low volatility + falling prices
+    - `volatile_bull`: high volatility + rising prices
+    - `volatile_bear`: high volatility + falling prices
+
+    The table shows IC (Pearson correlation) computed over only the trading days belonging to each regime. n_trading_days indicates the number of trading days used for each regime's computation.
+
+    When interpreting:
+    - A factor that performs consistently across all regimes is more robust and generalizable
+    - A factor that performs well in only one regime is regime-dependent — it may fail when the market transitions
+    - Pay attention to the trading-day count per regime: a regime with very few days may have unreliable metrics
+    - If the factor shows strong performance in the regime matching current market conditions, that is a positive signal for short-term deployment
+
+    Regime breakdown:
+    {{ regime_table }}
+    {% endif %}
+
     Analyze the combined result in the context of its ability to:
     1. Support or refute the hypothesis.
     2. Show improvement or deterioration compared to the SOTA experiment.

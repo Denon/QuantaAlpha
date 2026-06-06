@@ -52,10 +52,10 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
     
     @measure_time
     def __init__(
-        self, 
-        PROP_SETTING: BaseFacSetting, 
-        potential_direction, 
-        stop_event: threading.Event, 
+        self,
+        PROP_SETTING: BaseFacSetting,
+        potential_direction,
+        stop_event: threading.Event,
         use_local: bool = True,
         strategy_suffix: str = "",
         evolution_phase: str = "original",
@@ -64,6 +64,7 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
         direction_id: int = 0,
         round_idx: int = 0,
         quality_gate_config: dict = None,
+        regime_config: dict = None,
     ):
         with logger.tag("init"):
             self.use_local = use_local
@@ -80,6 +81,20 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
 
             # Quality gate config
             self.quality_gate_config = quality_gate_config or {}
+
+            # Regime config — load pre-built monthly regime map for feedback enrichment
+            self.regime_map = None
+            regime_cfg = regime_config or {}
+            if regime_cfg.get("regime_aware_feedback", False):
+                regime_map_path = regime_cfg.get("regime_map_path", "data/regime/monthly_regime_map.csv")
+                try:
+                    from scripts.build_regime_map import load_regime_map
+                    self.regime_map = load_regime_map(regime_map_path)
+                    logger.info(f"Regime-aware feedback enabled: loaded {len(self.regime_map)} months from {regime_map_path}")
+                except FileNotFoundError:
+                    logger.warning(f"Regime map not found at {regime_map_path}; regime-aware feedback disabled")
+                except Exception as e:
+                    logger.warning(f"Failed to load regime map: {e}; regime-aware feedback disabled")
 
             # For trajectory collection
             self._last_hypothesis = None
@@ -124,8 +139,11 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
 
             self.summarizer: HypothesisExperiment2Feedback = import_class(PROP_SETTING.summarizer)(scen)
             logger.log_object(self.summarizer, tag="summarizer")
+            # Pass regime map to summarizer for regime-aware feedback generation
+            if self.regime_map is not None:
+                self.summarizer.regime_map = self.regime_map
             self.trace = Trace(scen=scen)
-            
+
             global STOP_EVENT
             STOP_EVENT = stop_event
             super().__init__()

@@ -120,6 +120,221 @@ def process_results(current_result, sota_result):
     return filtered_combined_df.to_string()
 
 
+def build_regime_table(exp, regime_map) -> str | None:
+    """Build per-regime IC performance table from experiment workspace data.
+
+    Loads factor values from workspace result files, computes daily IC using
+    Qlib labels, groups daily IC by regime using the monthly regime map, and
+    returns a side-by-side Markdown table.
+
+    Args:
+        exp: Experiment with sub_workspace_list containing executed factor data.
+        regime_map: DataFrame from load_regime_map() with month_start/month_end/regime columns.
+
+    Returns:
+        Formatted Markdown string with per-regime IC and n_trading_days, or None
+        if computation fails (missing data, Qlib not initialized, etc.).
+    """
+    if regime_map is None:
+        return None
+
+    MIN_DAYS = 20
+
+    try:
+        import qlib
+        from qlib.data import D
+        from quantaalpha.backtest.ic_metrics import compute_daily_ic
+    except ImportError as e:
+        logger.warning(f"Cannot import Qlib/IC dependencies for regime table: {e}")
+        return None
+
+    try:
+        # Collect factor values from workspace result files
+        factor_data = {}  # factor_name -> factor_series
+        for ws in exp.sub_workspace_list:
+            h5_path = ws.workspace_path / "result.h5"
+            if not h5_path.exists():
+                continue
+            try:
+                df = pd.read_hdf(h5_path)
+                if isinstance(df, pd.DataFrame):
+                    if df.shape[1] == 1:
+                        series = df.iloc[:, 0]
+                    else:
+                        series = df.iloc[:, 0]
+                elif isinstance(df, pd.Series):
+                    series = df
+                else:
+                    continue
+
+                if series.empty:
+                    continue
+
+                name = getattr(ws.target_task, 'factor_name', f'factor_{len(factor_data)}')
+                # Ensure datetime is in index
+                if not isinstance(series.index, pd.MultiIndex):
+                    if hasattr(series.index, 'name') and series.index.name == 'datetime':
+                        # Single-level datetime index isn't usable with compute_daily_ic
+                        continue
+
+                factor_data[name] = series
+            except Exception as e:
+                logger.debug(f"Skipping factor workspace {ws.workspace_path}: {e}")
+                continue
+
+        if not factor_data:
+            logger.info("No factor workspace result files found; cannot compute per-regime IC")
+            return None
+
+        # Determine date range from factor data
+        all_dates = []
+        for series in factor_data.values():
+            if isinstance(series.index, pd.MultiIndex):
+                dt_level = series.index.get_level_values('datetime')
+            else:
+                dt_level = series.index
+            all_dates.extend(pd.to_datetime(dt_level).tolist())
+
+        if not all_dates:
+            return None
+
+        result_start = min(all_dates)
+        result_end = max(all_dates)
+
+        # Load label data from Qlib
+        try:
+            instruments = D.instruments('all')  # or csi300 based on config
+            label_expr = 'Ref($close, -2)/Ref($close, -1) - 1'
+            label_df = D.features(
+                instruments,
+                [label_expr],
+                start_time=result_start.strftime('%Y-%m-%d') if hasattr(result_start, 'strftime') else str(result_start)[:10],
+                end_time=result_end.strftime('%Y-%m-%d') if hasattr(result_end, 'strftime') else str(result_end)[:10],
+            )
+            label_series = label_df.iloc[:, 0]
+        except Exception as e:
+            logger.warning(f"Failed to load Qlib labels for regime table: {e}")
+            return None
+
+        # Map each date to a regime label
+        regime_map_copy = regime_map.copy()
+        regime_map_copy['month_start'] = pd.to_datetime(regime_map_copy['month_start'])
+        regime_map_copy['month_end'] = pd.to_datetime(regime_map_copy['month_end'])
+
+        # Get unique regime labels
+        regime_labels = sorted(regime_map_copy['regime'].dropna().unique())
+        if not regime_labels:
+            return None
+
+        # Compute per-regime IC for each factor
+        regime_metrics = {}  # regime -> {factor_name: mean_ic}
+        regime_day_counts = {}  # regime -> int
+
+        # Build date-to-regime lookup
+        date_regime_map = {}
+        for _, row in regime_map_copy.iterrows():
+            regime = row['regime']
+            if pd.isna(regime):
+                continue
+            # Each date in the month gets this regime
+            ms = row['month_start']
+            me = row['month_end']
+            if isinstance(ms, pd.Timestamp) and isinstance(me, pd.Timestamp):
+                dates_in_month = pd.date_range(ms, me, freq='B')
+                for d in dates_in_month:
+                    date_regime_map[d.date()] = regime
+
+        # Compute daily IC for each factor
+        for fname, fseries in factor_data.items():
+            try:
+                daily_pearson, daily_rank, n_days, n_obs = compute_daily_ic(fseries, label_series)
+                if daily_pearson.empty:
+                    continue
+
+                # Group daily IC by regime
+                for dt, ic_val in daily_pearson.items():
+                    dt_date = dt.date() if hasattr(dt, 'date') else pd.Timestamp(dt).date()
+                    regime = date_regime_map.get(dt_date)
+                    if regime is None:
+                        continue
+                    if regime not in regime_metrics:
+                        regime_metrics[regime] = {}
+                        regime_day_counts[regime] = 0
+                    if fname not in regime_metrics[regime]:
+                        regime_metrics[regime][fname] = []
+                    regime_metrics[regime][fname].append(ic_val)
+                    regime_day_counts[regime] += 1
+
+            except Exception as e:
+                logger.debug(f"Failed to compute daily IC for factor {fname}: {e}")
+                continue
+
+        if not regime_metrics:
+            logger.info("No regime metrics computed (no overlap between IC dates and regime map)")
+            return None
+
+        # For each regime, compute mean IC across all factors (simple average)
+        # Build table rows
+        regimes_in_table = []
+        for regime in regime_labels:
+            if regime not in regime_metrics:
+                continue
+            regimes_in_table.append(regime)
+
+        if not regimes_in_table:
+            return None
+
+        # Build side-by-side table
+        header = "| metric | " + " | ".join(regimes_in_table) + " |"
+        sep = "|---|" + "|".join(["---|"] * len(regimes_in_table))
+
+        ic_row_parts = []
+        ann_ret_row_parts = []
+        ir_row_parts = []
+        dd_row_parts = []
+        ndays_row_parts = []
+
+        for regime in regimes_in_table:
+            n_days = sum(1 for d, r in date_regime_map.items() if r == regime)
+            ndays_row_parts.append(f" {n_days} ")
+
+            # Compute mean IC for this regime across all factors
+            all_ics = []
+            for fname, ics in regime_metrics[regime].items():
+                all_ics.extend(ics)
+            mean_ic = sum(all_ics) / len(all_ics) if all_ics else float('nan')
+
+            ic_row_parts.append(f" {mean_ic: .4f} " if not pd.isna(mean_ic) else " N/A ")
+            # For v1, other metrics are not computed from raw data
+            ann_ret_row_parts.append(" — ")
+            ir_row_parts.append(" — ")
+            dd_row_parts.append(" — ")
+
+        lines = [header, sep,
+                 "| IC |" + "|".join(ic_row_parts) + "|",
+                 "| ann_return |" + "|".join(ann_ret_row_parts) + "|",
+                 "| IR |" + "|".join(ir_row_parts) + "|",
+                 "| max_dd |" + "|".join(dd_row_parts) + "|",
+                 "| n_trading_days |" + "|".join(ndays_row_parts) + "|"]
+
+        # Mark low-sample regimes
+        low_sample_notes = []
+        for regime in regimes_in_table:
+            n = sum(1 for d, r in date_regime_map.items() if r == regime)
+            if n < MIN_DAYS:
+                low_sample_notes.append(regime)
+
+        if low_sample_notes:
+            lines.append("")
+            lines.append(f"*low sample (<{MIN_DAYS} trading days): " + ", ".join(low_sample_notes))
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.warning(f"Failed to build regime table: {e}")
+        return None
+
+
 class QlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Feedback):
     def generate_feedback(self, exp: Experiment, hypothesis: Hypothesis, trace: Trace) -> HypothesisFeedback:
         """
@@ -160,13 +375,14 @@ class QlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Feedback):
                 hypothesis_text=hypothesis_text,
                 task_details=tasks_factors,
                 combined_result=combined_result,
+                regime_table=None,
             )
         )
 
         # Call the APIBackend to generate the response for hypothesis feedback with retry
         response_json = None
         last_error = None
-        
+
         for attempt in range(MAX_JSON_PARSE_RETRIES):
             try:
                 response = APIBackend().build_messages_and_create_chat_completion(
@@ -183,7 +399,7 @@ class QlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Feedback):
                 if attempt < MAX_JSON_PARSE_RETRIES - 1:
                     logger.info("[QuantaAlpha] Re-requesting LLM...")
                 continue
-        
+
         if response_json is None:
             logger.error(f"[QuantaAlpha] JSON parse still failed after {MAX_JSON_PARSE_RETRIES} attempts")
             return HypothesisFeedback(
@@ -274,6 +490,12 @@ class AlphaAgentQlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Fee
         # Process the results to filter important metrics
         combined_result = process_results(current_result, sota_result)
 
+        # Compute per-regime performance table if regime map is available
+        regime_map = getattr(self, 'regime_map', None)
+        regime_table = None
+        if regime_map is not None:
+            regime_table = build_regime_table(exp, regime_map)
+
         # Generate the system prompt
         sys_prompt = (
             Environment(undefined=StrictUndefined)
@@ -289,13 +511,14 @@ class AlphaAgentQlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Fee
                 hypothesis_text=hypothesis_text,
                 task_details=tasks_factors,
                 combined_result=combined_result,
+                regime_table=regime_table,
             )
         )
 
         # Call the APIBackend to generate the response for hypothesis feedback with retry
         response_json = None
         last_error = None
-        
+
         for attempt in range(MAX_JSON_PARSE_RETRIES):
             try:
                 response = APIBackend().build_messages_and_create_chat_completion(
@@ -312,7 +535,7 @@ class AlphaAgentQlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Fee
                 if attempt < MAX_JSON_PARSE_RETRIES - 1:
                     logger.info("[AlphaAgent] Re-requesting LLM...")
                 continue
-        
+
         if response_json is None:
             logger.error(f"[AlphaAgent] JSON parse still failed after {MAX_JSON_PARSE_RETRIES} attempts")
             return HypothesisFeedback(

@@ -95,6 +95,7 @@ def _run_branch(
     log_root: str,
     log_prefix: str,
     quality_gate_cfg: dict = None,
+    regime_cfg: dict = None,
 ):
     if log_root:
         branch_name = f"{log_prefix}_{idx:02d}"
@@ -107,6 +108,7 @@ def _run_branch(
         stop_event=None,
         use_local=use_local,
         quality_gate_config=quality_gate_cfg or {},
+        regime_config=regime_cfg or {},
     )
     model_loop.user_initial_direction = direction
     model_loop.run(step_n=step_n, stop_event=None)
@@ -121,6 +123,7 @@ def _run_evolution_task(
     log_root: str,
     stop_event: threading.Event | None,
     quality_gate_cfg: dict[str, Any] | None = None,
+    regime_cfg: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Run a single evolution task (one small loop).
@@ -176,6 +179,7 @@ def _run_evolution_task(
         direction_id=direction_id,
         round_idx=round_idx,
         quality_gate_config=quality_gate_cfg or {},
+        regime_config=regime_cfg or {},
     )
     model_loop.user_initial_direction = user_direction
     
@@ -197,6 +201,7 @@ def _parallel_task_worker(
     log_root: str,
     result_queue: Queue,
     task_idx: int,
+    regime_cfg: dict[str, Any] | None = None,
 ):
     """
     Worker for parallel evolution tasks. Runs one evolution task in a separate process and puts result in queue.
@@ -217,6 +222,7 @@ def _parallel_task_worker(
             user_direction=user_direction,
             log_root=log_root,
             stop_event=None,
+            regime_cfg=regime_cfg or {},
         )
         result_queue.put({
             "success": True,
@@ -261,6 +267,7 @@ def _run_tasks_parallel(
     use_local: bool,
     user_direction: str | None,
     log_root: str,
+    regime_cfg: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """
     Run multiple evolution tasks in parallel.
@@ -288,6 +295,7 @@ def _run_tasks_parallel(
                 log_root,
                 result_queue,
                 idx,
+                regime_cfg or {},
             ),
         )
         p.start()
@@ -322,6 +330,7 @@ def run_evolution_loop(
     planning_cfg: dict[str, Any],
     stop_event: threading.Event | None = None,
     quality_gate_cfg: dict[str, Any] | None = None,
+    regime_cfg: dict[str, Any] | None = None,
 ):
     """
     Run evolution loop: Original -> Mutation -> Crossover -> Mutation -> ...
@@ -438,6 +447,7 @@ def run_evolution_loop(
                 use_local=use_local,
                 user_direction=initial_direction,
                 log_root=log_root,
+                regime_cfg=regime_cfg or {},
             )
             
             completed_tasks = []
@@ -480,6 +490,7 @@ def run_evolution_loop(
                     log_root=log_root,
                     stop_event=stop_event,
                     quality_gate_cfg=quality_gate_cfg,
+                    regime_cfg=regime_cfg or {},
                 )
                 trajectory = controller.create_trajectory_from_loop_result(
                     task=task,
@@ -551,6 +562,7 @@ def main(path=None, step_n=100, direction=None, stop_event=None, config_path=Non
         exec_cfg = (run_cfg.get("execution") or {}) if isinstance(run_cfg, dict) else {}
         evolution_cfg = (run_cfg.get("evolution") or {}) if isinstance(run_cfg, dict) else {}
         quality_gate_cfg = (run_cfg.get("quality_gate") or {}) if isinstance(run_cfg, dict) else {}
+        regime_cfg = (run_cfg.get("regime") or {}) if isinstance(run_cfg, dict) else {}
 
         if evolution_mode is not None:
             use_evolution = evolution_mode
@@ -585,6 +597,7 @@ def main(path=None, step_n=100, direction=None, stop_event=None, config_path=Non
                 planning_cfg=planning_cfg,
                 stop_event=stop_event,
                 quality_gate_cfg=quality_gate_cfg,
+                regime_cfg=regime_cfg,
             )
         
         elif path is None:
@@ -619,7 +632,7 @@ def main(path=None, step_n=100, direction=None, stop_event=None, config_path=Non
                         logger.info(f"[Planning] Branch {idx}/{len(directions)} direction: {dir_text}")
                     p = Process(
                         target=_run_branch,
-                        args=(dir_text, step_n, use_local, idx, log_root if use_branch_logs else "", log_prefix),
+                        args=(dir_text, step_n, use_local, idx, log_root if use_branch_logs else "", log_prefix, quality_gate_cfg, regime_cfg),
                     )
                     p.start()
                     procs.append(p)
@@ -640,6 +653,7 @@ def main(path=None, step_n=100, direction=None, stop_event=None, config_path=Non
                         stop_event=stop_event,
                         use_local=use_local,
                         quality_gate_config=quality_gate_cfg,
+                        regime_config=regime_cfg or {},
                     )
                     model_loop.user_initial_direction = direction
                     model_loop.run(step_n=step_n, stop_event=stop_event)
