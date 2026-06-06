@@ -258,9 +258,22 @@ def build_regime_table(exp, regime_map) -> str | None:
         # Compute daily IC for each factor
         total_ic_dates = 0
         total_matched = 0
+        # Get CSI300 instruments for filtering factor data
+        csi300_instruments = set(D.list_instruments(D.instruments('csi300'), as_list=True))
         for fname, fseries in factor_data.items():
             try:
-                daily_pearson, daily_rank, n_days, n_obs = compute_daily_ic(fseries, label_series)
+                # Filter factor series to CSI300 instruments only
+                if isinstance(fseries.index, pd.MultiIndex):
+                    inst_level = fseries.index.get_level_values('instrument')
+                    inst_mask = inst_level.isin(csi300_instruments)
+                    fseries_filtered = fseries[inst_mask]
+                    if fseries_filtered.empty:
+                        logger.warning(f"Factor {fname}: no CSI300 instruments after filtering")
+                        continue
+                else:
+                    fseries_filtered = fseries
+
+                daily_pearson, daily_rank, n_days, n_obs = compute_daily_ic(fseries_filtered, label_series)
                 total_ic_dates += len(daily_pearson)
                 logger.info(f"Factor {fname}: daily_pearson has {len(daily_pearson)} values, n_days={n_days}")
                 if daily_pearson.empty:
