@@ -203,7 +203,18 @@ def build_regime_table(exp, regime_map) -> str | None:
 
         # Load label data from Qlib
         try:
-            instruments = D.instruments('all')  # or csi300 based on config
+            import os
+
+            # Ensure Qlib is initialized (may not be if running in main process
+            # while backtest ran in subprocess). qlib.init() is safe to call twice.
+            provider_uri = os.environ.get(
+                "QLIB_PROVIDER_URI",
+                os.path.expanduser("~/.qlib/qlib_data/cn_data"),
+            )
+            region = os.environ.get("QLIB_REGION", "cn")
+            qlib.init(provider_uri=provider_uri, region=region)
+
+            instruments = D.instruments('all')
             label_expr = 'Ref($close, -2)/Ref($close, -1) - 1'
             label_df = D.features(
                 instruments,
