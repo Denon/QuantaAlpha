@@ -282,6 +282,7 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
                 parent_trajectory_ids=parent_trajectory_ids,
                 factor_metrics_dict=factor_metrics_dict,
                 metric_context=metric_context,
+                regime_metrics_dict=getattr(self.summarizer, '_last_regime_metrics', None),
             )
             logger.info(f"Saved factors to library: {library_path} (phase={evolution_phase})")
         except Exception as e:

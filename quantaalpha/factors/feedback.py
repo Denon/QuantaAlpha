@@ -120,23 +120,26 @@ def process_results(current_result, sota_result):
     return filtered_combined_df.to_string()
 
 
-def build_regime_table(exp, regime_map) -> str | None:
+def build_regime_table(exp, regime_map) -> tuple[str | None, dict | None]:
     """Build per-regime IC performance table from experiment workspace data.
 
     Loads factor values from workspace result files, computes daily IC using
     Qlib labels, groups daily IC by regime using the monthly regime map, and
-    returns a side-by-side Markdown table.
+    returns a side-by-side Markdown table plus structured per-factor per-regime metrics.
 
     Args:
         exp: Experiment with sub_workspace_list containing executed factor data.
         regime_map: DataFrame from load_regime_map() with month_start/month_end/regime columns.
 
     Returns:
-        Formatted Markdown string with per-regime IC and n_trading_days, or None
-        if computation fails (missing data, Qlib not initialized, etc.).
+        Tuple of (markdown_table, regime_metrics_dict):
+        - markdown_table: Formatted Markdown string with per-regime IC and n_trading_days,
+          or None if computation fails.
+        - regime_metrics_dict: Dict mapping factor_name -> {regime_label: {IC, ICIR, Rank_IC,
+          hit_rate, n_days, n_months}}, or None if computation fails.
     """
     if regime_map is None:
-        return None
+        return None, None
 
     MIN_DAYS = 20
 
@@ -146,7 +149,7 @@ def build_regime_table(exp, regime_map) -> str | None:
         from quantaalpha.backtest.ic_metrics import compute_daily_ic
     except ImportError as e:
         logger.warning(f"Cannot import Qlib/IC dependencies for regime table: {e}")
-        return None
+        return None, None
 
     try:
         # Collect factor values from workspace result files
@@ -184,7 +187,7 @@ def build_regime_table(exp, regime_map) -> str | None:
 
         if not factor_data:
             logger.warning("No factor workspace result files found; cannot compute per-regime IC")
-            return None
+            return None, None
 
         # Determine date range from factor data
         all_dates = []
@@ -196,7 +199,7 @@ def build_regime_table(exp, regime_map) -> str | None:
             all_dates.extend(pd.to_datetime(dt_level).tolist())
 
         if not all_dates:
-            return None
+            return None, None
 
         result_start = min(all_dates)
         result_end = max(all_dates)
@@ -225,7 +228,7 @@ def build_regime_table(exp, regime_map) -> str | None:
             label_series = label_df.iloc[:, 0]
         except Exception as e:
             logger.warning(f"Failed to load Qlib labels for regime table: {e}")
-            return None
+            return None, None
 
         # Map each date to a regime label
         regime_map_copy = regime_map.copy()
@@ -235,13 +238,19 @@ def build_regime_table(exp, regime_map) -> str | None:
         # Get unique regime labels
         regime_labels = sorted(regime_map_copy['regime'].dropna().unique())
         if not regime_labels:
-            return None
+            return None, None
 
         # Compute per-regime IC for each factor
-        regime_metrics = {}  # regime -> {factor_name: mean_ic}
-        regime_day_counts = {}  # regime -> int
+        # regime_pearson_ics: regime -> {factor_name: [daily pearson IC values]}
+        # regime_rank_ics: regime -> {factor_name: [daily rank IC values]}
+        regime_pearson_ics = {}
+        regime_rank_ics = {}
+        regime_day_counts = {}  # regime -> int (across all factors)
 
-        # Build date-to-regime lookup
+        # Track months per regime for n_months calculation
+        regime_months = {}  # regime -> set of (year, month)
+
+        # Build date-to-regime lookup with month tracking
         date_regime_map = {}
         for _, row in regime_map_copy.iterrows():
             regime = row['regime']
@@ -254,6 +263,10 @@ def build_regime_table(exp, regime_map) -> str | None:
                 dates_in_month = pd.date_range(ms, me, freq='B')
                 for d in dates_in_month:
                     date_regime_map[d.date()] = regime
+                # Track unique months per regime
+                if regime not in regime_months:
+                    regime_months[regime] = set()
+                regime_months[regime].add((ms.year, ms.month))
 
         # Compute daily IC for each factor
         total_ic_dates = 0
@@ -285,44 +298,81 @@ def build_regime_table(exp, regime_map) -> str | None:
                 if daily_pearson.empty:
                     continue
 
-                # Group daily IC by regime
-                for dt, ic_val in daily_pearson.items():
+                # Group daily IC by regime (both pearson and rank)
+                for dt in daily_pearson.index:
                     dt_date = dt.date() if hasattr(dt, 'date') else pd.Timestamp(dt).date()
                     regime = date_regime_map.get(dt_date)
                     if regime is None:
                         continue
                     total_matched += 1
-                    if regime not in regime_metrics:
-                        regime_metrics[regime] = {}
+                    if regime not in regime_pearson_ics:
+                        regime_pearson_ics[regime] = {}
+                        regime_rank_ics[regime] = {}
                         regime_day_counts[regime] = 0
-                    if fname not in regime_metrics[regime]:
-                        regime_metrics[regime][fname] = []
-                    regime_metrics[regime][fname].append(ic_val)
+                    if fname not in regime_pearson_ics[regime]:
+                        regime_pearson_ics[regime][fname] = []
+                        regime_rank_ics[regime][fname] = []
+                    regime_pearson_ics[regime][fname].append(float(daily_pearson[dt]))
+                    if dt in daily_rank.index:
+                        regime_rank_ics[regime][fname].append(float(daily_rank[dt]))
                     regime_day_counts[regime] += 1
 
             except Exception as e:
                 logger.debug(f"Failed to compute daily IC for factor {fname}: {e}")
                 continue
 
-        if not regime_metrics:
+        if not regime_pearson_ics:
             logger.warning(
                 f"No regime metrics computed: "
                 f"total_ic_dates={total_ic_dates}, total_matched={total_matched}, "
                 f"date_regime_map entries={len(date_regime_map)}, "
                 f"factors_computed={len(factor_data)}"
             )
-            return None
+            return None, None
 
-        # For each regime, compute mean IC across all factors (simple average)
-        # Build table rows
+        # Build the structured per-factor per-regime metrics dict
+        structured = {}
+        for fname in factor_data:
+            factor_regimes = {}
+            for regime in regime_labels:
+                pearson_vals = regime_pearson_ics.get(regime, {}).get(fname, [])
+                rank_vals = regime_rank_ics.get(regime, {}).get(fname, [])
+                if not pearson_vals:
+                    continue
+                n = len(pearson_vals)
+                mean_ic = sum(pearson_vals) / n
+                std_ic = (sum((v - mean_ic) ** 2 for v in pearson_vals) / (n - 1)) ** 0.5 if n > 1 else 0.0
+                icir = mean_ic / std_ic if std_ic > 0 else 0.0
+
+                mean_rank_ic = sum(rank_vals) / len(rank_vals) if rank_vals else 0.0
+                std_rank_ic = (sum((v - mean_rank_ic) ** 2 for v in rank_vals) / (len(rank_vals) - 1)) ** 0.5 if len(rank_vals) > 1 else 0.0
+                rank_icir = mean_rank_ic / std_rank_ic if std_rank_ic > 0 else 0.0
+
+                hit_rate = sum(1 for v in pearson_vals if v > 0) / n if n > 0 else 0.0
+
+                n_months = len(regime_months.get(regime, set()))
+
+                factor_regimes[regime] = {
+                    "IC": round(mean_ic, 6),
+                    "ICIR": round(icir, 4),
+                    "Rank_IC": round(mean_rank_ic, 6),
+                    "Rank_ICIR": round(rank_icir, 4),
+                    "hit_rate": round(hit_rate, 4),
+                    "n_days": n,
+                    "n_months": n_months,
+                }
+            if factor_regimes:
+                structured[fname] = factor_regimes
+
+        # Build the Markdown table (existing behavior, aggregated across factors)
         regimes_in_table = []
         for regime in regime_labels:
-            if regime not in regime_metrics:
+            if regime not in regime_pearson_ics:
                 continue
             regimes_in_table.append(regime)
 
         if not regimes_in_table:
-            return None
+            return None, structured if structured else None
 
         # Build side-by-side table
         header = "| metric | " + " | ".join(regimes_in_table) + " |"
@@ -340,7 +390,7 @@ def build_regime_table(exp, regime_map) -> str | None:
 
             # Compute mean IC for this regime across all factors
             all_ics = []
-            for fname, ics in regime_metrics[regime].items():
+            for fname, ics in regime_pearson_ics.get(regime, {}).items():
                 all_ics.extend(ics)
             mean_ic = sum(all_ics) / len(all_ics) if all_ics else float('nan')
 
@@ -368,11 +418,11 @@ def build_regime_table(exp, regime_map) -> str | None:
             lines.append("")
             lines.append(f"*low sample (<{MIN_DAYS} trading days): " + ", ".join(low_sample_notes))
 
-        return "\n".join(lines)
+        return "\n".join(lines), structured if structured else None
 
     except Exception as e:
         logger.warning(f"Failed to build regime table: {e}")
-        return None
+        return None, None
 
 
 class QlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Feedback):
@@ -535,7 +585,9 @@ class AlphaAgentQlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Fee
         regime_table = None
         if regime_map is not None:
             logger.info(f"Regime map available ({len(regime_map)} months), building regime table...")
-            regime_table = build_regime_table(exp, regime_map)
+            regime_table, regime_metrics_dict = build_regime_table(exp, regime_map)
+            # Store structured metrics for persistence by the mining pipeline
+            self._last_regime_metrics = regime_metrics_dict
             if regime_table is not None:
                 logger.info(f"Regime table built successfully ({len(regime_table)} chars)")
             else:

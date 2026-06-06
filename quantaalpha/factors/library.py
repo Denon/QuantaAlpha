@@ -90,6 +90,7 @@ class FactorLibraryManager:
         parent_trajectory_ids: Optional[list] = None,
         factor_metrics_dict: Optional[dict] = None,
         metric_context: Optional[dict] = None,
+        regime_metrics_dict: Optional[dict] = None,
     ):
         """Extract factors from a QlibFactorExperiment and write to library.
 
@@ -98,6 +99,9 @@ class FactorLibraryManager:
                 If provided, each factor's entry contains per-factor IC metrics.
             metric_context: Optional dict with provider_uri, market, start_time, end_time,
                 label_expr describing the context that produced factor_metrics.
+            regime_metrics_dict: Optional dict mapping factor_name -> {regime: {IC, ICIR,
+                Rank_IC, hit_rate, n_days, n_months}}. If provided, per-regime metrics
+                and a computed regime_summary are persisted for each factor.
         """
         if experiment is None:
             logger.warning("experiment is None, skip saving factors")
@@ -195,6 +199,36 @@ class FactorLibraryManager:
                 "backtest_results": backtest_results,  # legacy compat
                 "feedback": feedback_dict,
             }
+
+            # Attach per-regime metrics if available (keyed by factor_name)
+            if regime_metrics_dict:
+                # Match by factor_name (build_regime_table uses factor_name not factor_id)
+                f_regime_metrics = regime_metrics_dict.get(factor_name)
+                if f_regime_metrics:
+                    factor_entry["regime_metrics"] = f_regime_metrics
+                    # Compute regime_summary
+                    rank_ics = {
+                        r: float(m.get("Rank_IC", 0))
+                        for r, m in f_regime_metrics.items()
+                    }
+                    if rank_ics:
+                        abs_ics = {r: abs(v) for r, v in rank_ics.items()}
+                        best_regime = max(abs_ics, key=abs_ics.get)
+                        worst_regime = min(abs_ics, key=abs_ics.get)
+                        # regime_stability = 1 - std / mean_abs, clamped to [0, 1]
+                        values = list(abs_ics.values())
+                        mean_abs = sum(values) / len(values)
+                        if mean_abs > 0 and len(values) > 1:
+                            variance = sum((v - mean_abs) ** 2 for v in values) / (len(values) - 1)
+                            std_dev = variance ** 0.5
+                            stability = max(0.0, min(1.0, 1.0 - std_dev / mean_abs))
+                        else:
+                            stability = 1.0
+                        factor_entry["regime_summary"] = {
+                            "best_regime": best_regime,
+                            "worst_regime": worst_regime,
+                            "regime_stability": round(stability, 4),
+                        }
 
             self.data["factors"][factor_id] = factor_entry
 

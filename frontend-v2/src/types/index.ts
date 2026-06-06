@@ -107,6 +107,24 @@ export interface FactorMetrics {
   n_obs: number;
 }
 
+// Per-regime metrics for a single regime
+export interface RegimeMetrics {
+  IC: number;
+  ICIR: number;
+  Rank_IC: number;
+  Rank_ICIR: number;
+  hit_rate: number;
+  n_days: number;
+  n_months: number;
+}
+
+// Summary computed from per-regime metrics
+export interface RegimeSummary {
+  best_regime: string;
+  worst_regime: string;
+  regime_stability: number;
+}
+
 // Factor information
 export interface Factor {
   factorId: string;
@@ -127,6 +145,10 @@ export interface Factor {
   annualReturn: number;
   maxDrawdown: number;
   sharpeRatio: number;
+
+  // Per-regime performance metrics
+  regimeMetrics?: Record<string, RegimeMetrics>;
+  regimeSummary?: RegimeSummary;
 
   // Metadata
   round: number;

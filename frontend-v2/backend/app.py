@@ -631,6 +631,9 @@ async def get_factors(
             "annualReturn": exp_annual_return,
             "maxDrawdown": exp_max_drawdown,
             "sharpeRatio": exp_sharpe,
+            # Per-regime performance metrics
+            "regimeMetrics": factor_info.get("regime_metrics"),
+            "regimeSummary": factor_info.get("regime_summary"),
             # Legacy backtest_results (kept for backward compatibility)
             "backtestResults": bt,
             "round": factor_info.get("evolution_metadata", {}).get("round", 0)
