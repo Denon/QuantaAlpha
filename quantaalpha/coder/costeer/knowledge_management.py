@@ -8,6 +8,8 @@ from itertools import combinations
 from pathlib import Path
 from typing import Union
 
+import dill as pickle
+
 from jinja2 import Environment, StrictUndefined
 
 from quantaalpha.coder.costeer.config import CoSTEERSettings
@@ -740,6 +742,23 @@ class CoSTEERKnowledgeBaseV2(EvolvingKnowledgeBase):
 
         # store the task description to component nodes
         self.task_to_component_nodes = {}
+
+        # restore companion knowledge dicts if graph was loaded from a prior run
+        dicts_path = Path.cwd() / "graph_knowledge_dicts.pkl"
+        if self.graph.size() > 0 and dicts_path.exists():
+            with dicts_path.open("rb") as f:
+                dicts = pickle.load(f)
+                self.node_to_implementation_knowledge_dict = dicts.get(
+                    "node_to_implementation_knowledge_dict", {}
+                )
+                self.success_task_to_knowledge_dict = dicts.get(
+                    "success_task_to_knowledge_dict", {}
+                )
+            logger.info(
+                f"Knowledge dicts loaded from {dicts_path}, "
+                f"node_to_impl={len(self.node_to_implementation_knowledge_dict)}, "
+                f"success_tasks={len(self.success_task_to_knowledge_dict)}"
+            )
 
     def get_all_nodes_by_label(self, label: str) -> list[UndirectedNode]:
         return self.graph.get_all_nodes_by_label(label)
