@@ -214,7 +214,7 @@ def build_regime_table(exp, regime_map) -> str | None:
             region = os.environ.get("QLIB_REGION", "cn")
             qlib.init(provider_uri=provider_uri, region=region)
 
-            instruments = D.instruments('all')
+            instruments = D.instruments('csi300')
             label_expr = 'Ref($close, -2)/Ref($close, -1) - 1'
             label_df = D.features(
                 instruments,
