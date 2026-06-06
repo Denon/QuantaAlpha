@@ -256,9 +256,13 @@ def build_regime_table(exp, regime_map) -> str | None:
                     date_regime_map[d.date()] = regime
 
         # Compute daily IC for each factor
+        total_ic_dates = 0
+        total_matched = 0
         for fname, fseries in factor_data.items():
             try:
                 daily_pearson, daily_rank, n_days, n_obs = compute_daily_ic(fseries, label_series)
+                total_ic_dates += len(daily_pearson)
+                logger.info(f"Factor {fname}: daily_pearson has {len(daily_pearson)} values, n_days={n_days}")
                 if daily_pearson.empty:
                     continue
 
@@ -268,6 +272,7 @@ def build_regime_table(exp, regime_map) -> str | None:
                     regime = date_regime_map.get(dt_date)
                     if regime is None:
                         continue
+                    total_matched += 1
                     if regime not in regime_metrics:
                         regime_metrics[regime] = {}
                         regime_day_counts[regime] = 0
@@ -281,21 +286,11 @@ def build_regime_table(exp, regime_map) -> str | None:
                 continue
 
         if not regime_metrics:
-            # Debug: log date ranges to diagnose overlap issues
-            ic_dates = []
-            for fname, fseries in factor_data.items():
-                if isinstance(fseries.index, pd.MultiIndex):
-                    ic_dates.extend(pd.to_datetime(fseries.index.get_level_values('datetime')).tolist())
-            ic_min = min(ic_dates) if ic_dates else None
-            ic_max = max(ic_dates) if ic_dates else None
-            rm_min = regime_map_copy['month_start'].min()
-            rm_max = regime_map_copy['month_end'].max()
-            drm_count = len(date_regime_map)
             logger.warning(
                 f"No regime metrics computed: "
-                f"factor date range=[{ic_min}, {ic_max}], "
-                f"regime map date range=[{rm_min}, {rm_max}], "
-                f"date_regime_map entries={drm_count}"
+                f"total_ic_dates={total_ic_dates}, total_matched={total_matched}, "
+                f"date_regime_map entries={len(date_regime_map)}, "
+                f"factors_computed={len(factor_data)}"
             )
             return None
 
