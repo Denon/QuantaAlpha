@@ -104,5 +104,10 @@ class CoSTEER(Developer[Experiment]):
         if self.new_knowledge_base_path is not None:
             pickle.dump(self.knowledge_base, open(self.new_knowledge_base_path, "wb"))
             logger.info(f"New knowledge base saved to {self.new_knowledge_base_path}")
+
+        # persist the knowledge graph so experience accumulates across runs
+        self.knowledge_base.graph.dump()
+        logger.info(f"Knowledge Graph saved, size={self.knowledge_base.graph.size()}")
+
         exp.sub_workspace_list = experiment.sub_workspace_list
         return exp
