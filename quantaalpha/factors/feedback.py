@@ -515,6 +515,15 @@ class AlphaAgentQlibFactorHypothesisExperiment2Feedback(HypothesisExperiment2Fee
             )
         )
 
+        # Debug: save full prompt to file when regime analysis is present
+        if regime_table is not None:
+            try:
+                prompt_dump_path = logger.log_trace_path / "regime_feedback_prompt.txt"
+                prompt_dump_path.write_text(usr_prompt, encoding="utf-8")
+                logger.info(f"Regime feedback prompt saved to {prompt_dump_path}")
+            except Exception:
+                pass
+
         # Call the APIBackend to generate the response for hypothesis feedback with retry
         response_json = None
         last_error = None

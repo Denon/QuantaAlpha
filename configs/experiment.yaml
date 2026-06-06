@@ -168,7 +168,7 @@ llm:
 # ============================================================
 regime:
   # Enable per-regime performance breakdown in LLM feedback prompts
-  regime_aware_feedback: false
+  regime_aware_feedback: true
 
   # Path to pre-built monthly regime map CSV
   regime_map_path: "data/regime/monthly_regime_map.csv"

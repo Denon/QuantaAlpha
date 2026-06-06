@@ -88,6 +88,10 @@ class AlphaAgentLoop(LoopBase, metaclass=LoopMeta):
             if regime_cfg.get("regime_aware_feedback", False):
                 regime_map_path = regime_cfg.get("regime_map_path", "data/regime/monthly_regime_map.csv")
                 try:
+                    import sys
+                    _project_root = Path(__file__).resolve().parents[2]
+                    if str(_project_root) not in sys.path:
+                        sys.path.insert(0, str(_project_root))
                     from scripts.build_regime_map import load_regime_map
                     self.regime_map = load_regime_map(regime_map_path)
                     logger.info(f"Regime-aware feedback enabled: loaded {len(self.regime_map)} months from {regime_map_path}")
