@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Factor, FactorQuality } from '@/types';
+import { Factor, FactorQuality, RegimeMetrics } from '@/types';
 import { formatNumber, getQualityBadgeClass } from '@/utils';
 import { getFactors, getFactorDetail } from '@/services/api';
 import {
@@ -22,6 +22,7 @@ export const FactorLibraryPage: React.FC = () => {
   const [filteredFactors, setFilteredFactors] = useState<Factor[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [qualityFilter, setQualityFilter] = useState<FactorQuality | 'all'>('all');
+  const [regimeFilter, setRegimeFilter] = useState<string>('');
   const [selectedFactor, setSelectedFactor] = useState<any | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +36,7 @@ export const FactorLibraryPage: React.FC = () => {
 
   useEffect(() => {
     filterFactors();
-  }, [factors, searchQuery, qualityFilter]);
+  }, [factors, searchQuery, qualityFilter, regimeFilter]);
 
   const loadFactors = useCallback(async () => {
     setIsLoading(true);
@@ -65,6 +66,9 @@ export const FactorLibraryPage: React.FC = () => {
             annualReturn: f.annualReturn || 0,
             maxDrawdown: f.maxDrawdown || 0,
             sharpeRatio: f.sharpeRatio || 0,
+            // Per-regime metrics
+            regimeMetrics: f.regimeMetrics,
+            regimeSummary: f.regimeSummary,
             round: f.round || 0,
             direction: String(f.direction ?? ''),
             createdAt: f.createdAt || new Date().toISOString(),
@@ -85,24 +89,21 @@ export const FactorLibraryPage: React.FC = () => {
   }, [selectedLibrary]);
 
   const loadMockFactors = () => {
-    const cached = localStorage.getItem('quantaalpha_factors');
-    if (cached) {
-      try {
-        setFactors(JSON.parse(cached));
-      } catch {
-        setFactors(generateMockFactors());
-      }
-    } else {
-      const mock = generateMockFactors();
-      setFactors(mock);
-      localStorage.setItem('quantaalpha_factors', JSON.stringify(mock));
-    }
+    // Always regenerate mock data to ensure it reflects latest Factor schema
+    const mock = generateMockFactors();
+    setFactors(mock);
+    try { localStorage.setItem('quantaalpha_factors', JSON.stringify(mock)); } catch {}
   };
 
   const filterFactors = () => {
     let filtered = factors;
     if (qualityFilter !== 'all') {
       filtered = filtered.filter((f) => f.quality === qualityFilter);
+    }
+    if (regimeFilter) {
+      filtered = filtered.filter(
+        (f) => f.regimeSummary?.best_regime === regimeFilter
+      );
     }
     if (searchQuery) {
       const query = searchQuery.toLowerCase();
@@ -148,6 +149,29 @@ export const FactorLibraryPage: React.FC = () => {
     low: factors.filter((f) => f.quality === 'low').length,
     unknown: factors.filter((f) => f.quality === 'unknown').length,
   };
+
+  // Compute regime distribution for aggregate stats
+  const regimeDistribution = useMemo(() => {
+    const dist: Record<string, number> = {};
+    factors.forEach((f) => {
+      if (f.regimeSummary?.best_regime) {
+        const regime = f.regimeSummary.best_regime;
+        dist[regime] = (dist[regime] || 0) + 1;
+      }
+    });
+    return Object.entries(dist).sort(([, a], [, b]) => b - a);
+  }, [factors]);
+
+  // Collect available regime labels for the filter dropdown
+  const availableRegimes = useMemo(() => {
+    const regimeSet = new Set<string>();
+    factors.forEach((f) => {
+      if (f.regimeSummary?.best_regime) {
+        regimeSet.add(f.regimeSummary.best_regime);
+      }
+    });
+    return Array.from(regimeSet).sort();
+  }, [factors]);
 
   return (
     <div className="space-y-6 animate-fade-in-up">
@@ -200,7 +224,7 @@ export const FactorLibraryPage: React.FC = () => {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <Card className="glass card-hover">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
@@ -270,6 +294,25 @@ export const FactorLibraryPage: React.FC = () => {
             </div>
           </CardContent>
         </Card>
+
+        {/* Regime Distribution Card */}
+        {regimeDistribution.length > 0 && (
+          <Card className="glass card-hover bg-gradient-to-br from-purple-50/50 to-green-50/50 dark:from-purple-950/20 dark:to-green-950/20">
+            <CardContent className="p-4">
+              <div>
+                <div className="text-sm text-muted-foreground">🏠 最佳环境分布</div>
+                <div className="mt-2 space-y-1">
+                  {regimeDistribution.map(([regime, count]) => (
+                    <div key={regime} className="flex justify-between text-xs">
+                      <span className="text-muted-foreground">{regime}</span>
+                      <span className="font-bold">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Filters */}
@@ -325,6 +368,28 @@ export const FactorLibraryPage: React.FC = () => {
                 未知 ({stats.unknown})
               </Button>
             </div>
+
+            {/* Regime filter dropdown */}
+            {availableRegimes.length > 0 && (
+              <>
+                <div className="w-px h-8 bg-border hidden md:block" />
+                <select
+                  value={regimeFilter}
+                  onChange={(e) => setRegimeFilter(e.target.value)}
+                  className="rounded-lg border border-input bg-background px-3 py-2 text-sm focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+                >
+                  <option value="">🌍 全部环境</option>
+                  {availableRegimes.map((regime) => {
+                    const count = regimeDistribution.find(([r]) => r === regime)?.[1] ?? 0;
+                    return (
+                      <option key={regime} value={regime}>
+                        {regime} ({count})
+                      </option>
+                    );
+                  })}
+                </select>
+              </>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -390,6 +455,22 @@ export const FactorLibraryPage: React.FC = () => {
                   <span className="font-mono font-medium">{formatNumber(factor.rankIcir, 3)}</span>
                 </div>
               </div>
+              {/* Regime summary (compact) */}
+              {factor.regimeSummary && factor.regimeMetrics && (
+                <div className="text-xs flex items-center gap-1.5 flex-wrap">
+                  <span className="text-muted-foreground">🏠 最佳:</span>
+                  <span className="text-success font-medium">
+                    {factor.regimeSummary.best_regime}
+                    ({formatNumber(factor.regimeMetrics[factor.regimeSummary.best_regime]?.Rank_IC ?? 0, 3)})
+                  </span>
+                  <span className="text-muted-foreground">|</span>
+                  <span className="text-muted-foreground">🔻 最差:</span>
+                  <span className="text-destructive font-medium">
+                    {factor.regimeSummary.worst_regime}
+                    ({formatNumber(factor.regimeMetrics[factor.regimeSummary.worst_regime]?.Rank_IC ?? 0, 3)})
+                  </span>
+                </div>
+              )}
               {factor.createdAt && (
                 <div className="flex items-center gap-2 text-xs text-muted-foreground">
                   <Calendar className="h-3 w-3" />
@@ -500,6 +581,62 @@ export const FactorLibraryPage: React.FC = () => {
                 </div>
               )}
 
+              {/* Per-Regime Metrics Table */}
+              {selectedFactor.regimeMetrics && Object.keys(selectedFactor.regimeMetrics).length > 0 && (
+                <div>
+                  <h4 className="text-sm font-medium mb-1 flex items-center gap-2">
+                    <BarChart3 className="h-3.5 w-3.5 text-purple-500" />
+                    不同市场环境表现
+                    {selectedFactor.regimeSummary?.regime_stability != null && (
+                      <span className="text-xs bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300 px-2 py-0.5 rounded-full">
+                        稳定性: {formatNumber(selectedFactor.regimeSummary.regime_stability, 2)}
+                      </span>
+                    )}
+                  </h4>
+                  <div className="overflow-x-auto rounded-lg border border-purple-200 dark:border-purple-800">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-900/20">
+                          <th className="text-left p-2 font-medium">市场环境</th>
+                          <th className="text-right p-2 font-medium">Rank IC</th>
+                          <th className="text-right p-2 font-medium">IC</th>
+                          <th className="text-right p-2 font-medium">ICIR</th>
+                          <th className="text-right p-2 font-medium">胜率</th>
+                          <th className="text-right p-2 font-medium">样本天数</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(Object.entries(selectedFactor.regimeMetrics) as [string, RegimeMetrics][])
+                          .sort(([, a], [, b]) => Math.abs(b.Rank_IC) - Math.abs(a.Rank_IC))
+                          .map(([regime, metrics]) => {
+                            const rankIcAbs = Math.abs(metrics.Rank_IC);
+                            const allMetrics: RegimeMetrics[] = Object.values(selectedFactor.regimeMetrics!);
+                            const maxAbs = Math.max(
+                              ...allMetrics.map((m: RegimeMetrics) => Math.abs(m.Rank_IC))
+                            );
+                            const ratio = maxAbs > 0 ? rankIcAbs / maxAbs : 0;
+                            const bgClass =
+                              ratio >= 0.8 ? 'bg-green-50 dark:bg-green-900/20' :
+                              ratio >= 0.5 ? 'bg-yellow-50 dark:bg-yellow-900/20' :
+                              ratio >= 0.3 ? 'bg-orange-50 dark:bg-orange-900/20' :
+                              'bg-red-50 dark:bg-red-900/20';
+                            return (
+                              <tr key={regime} className={`border-b border-purple-100 dark:border-purple-900/50 ${bgClass}`}>
+                                <td className="p-2 font-medium">{regime}</td>
+                                <td className="text-right p-2 font-mono font-bold">{formatNumber(metrics.Rank_IC, 4)}</td>
+                                <td className="text-right p-2 font-mono">{formatNumber(metrics.IC, 4)}</td>
+                                <td className="text-right p-2 font-mono">{formatNumber(metrics.ICIR, 3)}</td>
+                                <td className="text-right p-2 font-mono">{Math.round(metrics.hit_rate * 100)}%</td>
+                                <td className="text-right p-2 text-muted-foreground">{metrics.n_days}</td>
+                              </tr>
+                            );
+                          })}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               {/* Experiment-level Results */}
               {(selectedFactor.experimentBacktestResults && Object.keys(selectedFactor.experimentBacktestResults).length > 0) && (
                 <div>
@@ -557,8 +694,34 @@ export const FactorLibraryPage: React.FC = () => {
 function generateMockFactors(): Factor[] {
   const qualities: FactorQuality[] = ['high', 'medium', 'low'];
   const directions = ['动量类', '价值类', '成长类', '技术指标'];
+  const regimes = ['calm_bull', 'volatile_bull', 'calm_bear', 'volatile_bear'];
   const factors: Factor[] = [];
   for (let i = 0; i < 30; i++) {
+    const mockRegimeMetrics: Record<string, any> = {};
+    let bestRegime = '';
+    let worstRegime = '';
+    let bestRankIc = -1;
+    let worstRankIc = 999;
+    regimes.forEach((r) => {
+      const rankIc = 0.005 + Math.random() * 0.05;
+      const ic = rankIc * (0.7 + Math.random() * 0.3);
+      mockRegimeMetrics[r] = {
+        IC: parseFloat(ic.toFixed(4)),
+        ICIR: parseFloat((ic / 0.015).toFixed(3)),
+        Rank_IC: parseFloat(rankIc.toFixed(4)),
+        Rank_ICIR: parseFloat((rankIc / 0.015).toFixed(3)),
+        hit_rate: parseFloat((0.45 + Math.random() * 0.35).toFixed(2)),
+        n_days: Math.floor(80 + Math.random() * 300),
+        n_months: Math.floor(4 + Math.random() * 14),
+      };
+      if (rankIc > bestRankIc) { bestRankIc = rankIc; bestRegime = r; }
+      if (rankIc < worstRankIc) { worstRankIc = rankIc; worstRegime = r; }
+    });
+    const rankIcValues = Object.values(mockRegimeMetrics).map((m: any) => Math.abs(m.Rank_IC));
+    const meanAbs = rankIcValues.reduce((a, b) => a + b, 0) / rankIcValues.length;
+    const variance = rankIcValues.reduce((s, v) => s + (v - meanAbs) ** 2, 0) / (rankIcValues.length - 1);
+    const stability = Math.max(0, Math.min(1, 1 - Math.sqrt(variance) / meanAbs));
+
     factors.push({
       factorId: `factor_${i + 1}`,
       factorName: `Factor_${i + 1}_${directions[i % 4]}`,
@@ -569,6 +732,15 @@ function generateMockFactors(): Factor[] {
       icir: 0.3 + Math.random() * 0.5,
       rankIc: 0.025 + Math.random() * 0.05,
       rankIcir: 0.25 + Math.random() * 0.5,
+      regimeMetrics: mockRegimeMetrics,
+      regimeSummary: {
+        best_regime: bestRegime,
+        worst_regime: worstRegime,
+        regime_stability: parseFloat(stability.toFixed(2)),
+      },
+      annualReturn: 0.05 + Math.random() * 0.15,
+      maxDrawdown: -(0.05 + Math.random() * 0.2),
+      sharpeRatio: 0.5 + Math.random() * 1.5,
       round: Math.floor(i / 5) + 1,
       direction: directions[i % 4],
       createdAt: new Date(Date.now() - i * 86400000).toISOString(),

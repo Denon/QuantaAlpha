@@ -54,13 +54,13 @@ class TestBuildRegimeTable:
         return exp
 
     def test_regime_map_none_returns_none(self):
-        """build_regime_table with None regime_map returns None."""
+        """build_regime_table with None regime_map returns (None, None)."""
         from quantaalpha.factors.feedback import build_regime_table
         result = build_regime_table(MagicMock(), None)
-        assert result is None
+        assert result == (None, None)
 
     def test_missing_workspace_files_returns_none(self, mock_regime_map):
-        """build_regime_table with no result.h5 files returns None."""
+        """build_regime_table with no result.h5 files returns (None, None)."""
         from quantaalpha.factors.feedback import build_regime_table
 
         exp = MagicMock()
@@ -70,7 +70,7 @@ class TestBuildRegimeTable:
 
         with patch("quantaalpha.factors.feedback.logger") as mock_logger:
             result = build_regime_table(exp, mock_regime_map)
-            assert result is None
+            assert result == (None, None)
 
     @patch("quantaalpha.factors.feedback.logger")
     @patch("quantaalpha.factors.feedback.build_regime_table")
