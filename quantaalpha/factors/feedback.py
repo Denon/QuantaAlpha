@@ -281,7 +281,22 @@ def build_regime_table(exp, regime_map) -> str | None:
                 continue
 
         if not regime_metrics:
-            logger.warning("No regime metrics computed (no overlap between IC dates and regime map)")
+            # Debug: log date ranges to diagnose overlap issues
+            ic_dates = []
+            for fname, fseries in factor_data.items():
+                if isinstance(fseries.index, pd.MultiIndex):
+                    ic_dates.extend(pd.to_datetime(fseries.index.get_level_values('datetime')).tolist())
+            ic_min = min(ic_dates) if ic_dates else None
+            ic_max = max(ic_dates) if ic_dates else None
+            rm_min = regime_map_copy['month_start'].min()
+            rm_max = regime_map_copy['month_end'].max()
+            drm_count = len(date_regime_map)
+            logger.warning(
+                f"No regime metrics computed: "
+                f"factor date range=[{ic_min}, {ic_max}], "
+                f"regime map date range=[{rm_min}, {rm_max}], "
+                f"date_regime_map entries={drm_count}"
+            )
             return None
 
         # For each regime, compute mean IC across all factors (simple average)
