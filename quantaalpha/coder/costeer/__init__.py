@@ -109,5 +109,21 @@ class CoSTEER(Developer[Experiment]):
         self.knowledge_base.graph.dump()
         logger.info(f"Knowledge Graph saved, size={self.knowledge_base.graph.size()}")
 
+        # persist companion knowledge dicts alongside the graph
+        import dill as dill_pickle
+        dicts_path = Path.cwd() / "graph_knowledge_dicts.pkl"
+        dill_pickle.dump(
+            {
+                "node_to_implementation_knowledge_dict": self.knowledge_base.node_to_implementation_knowledge_dict,
+                "success_task_to_knowledge_dict": self.knowledge_base.success_task_to_knowledge_dict,
+            },
+            open(dicts_path, "wb"),
+        )
+        logger.info(
+            f"Knowledge dicts saved, "
+            f"node_to_impl={len(self.knowledge_base.node_to_implementation_knowledge_dict)}, "
+            f"success_tasks={len(self.knowledge_base.success_task_to_knowledge_dict)}"
+        )
+
         exp.sub_workspace_list = experiment.sub_workspace_list
         return exp
